@@ -29,7 +29,15 @@ export type Command =
   | { type: "skip" }
   | { type: "search"; text: string }
   | { type: "volume"; action: "up" | "down" | "mute" }
+  // Launch an app straight into a remembered item (home "Jump back in").
+  | { type: "resume"; app: ResumeApp; id: string }
+  // Pick the idle screensaver and show it now ("off" just wakes the TV).
+  | { type: "screensaver"; mode: ScreensaverMode }
   | { type: "ping" };
+
+export type ResumeApp = "youtube" | "prime";
+export type ScreensaverMode = "art" | "clock" | "off";
+export const SCREENSAVER_MODES: ScreensaverMode[] = ["art", "clock", "off"];
 
 // Commands the server forwards to site adapters (extension). launch/home/
 // volume/ping stay server-side, as does fullscreen: it needs a real keypress
@@ -171,10 +179,28 @@ export interface ServerState {
   // Adapter apps with a live extension connection. The PWA uses this to show
   // contextual controls only when the on-TV side can actually respond.
   adapters: AppId[];
+  screensaver: { mode: ScreensaverMode; active: boolean };
+}
+
+// --- Home screen feed (server -> TV home page + phone) ---
+
+export interface JumpItem {
+  app: ResumeApp;
+  id: string;
+  title: string;
+  // Channel (YouTube) or Prime's meta line.
+  subtitle: string;
+  image: string;
+  progress: number | null;
+}
+
+export interface HomeFeed {
+  jumpBack: JumpItem[];
 }
 
 export type ServerMessage =
   | { type: "state"; state: ServerState }
+  | { type: "home"; home: HomeFeed }
   | { type: "context"; context: AppContext }
   | { type: "ack"; command: Command }
   | { type: "error"; message: string };
@@ -249,6 +275,19 @@ export function parseCommand(input: unknown): Command {
         return { type: "search", text: c.text };
       }
       throw new Error("search.text must be 1..200 chars");
+    case "resume":
+      if (c.app === "youtube" && typeof c.id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(c.id)) {
+        return { type: "resume", app: "youtube", id: c.id };
+      }
+      if (c.app === "prime" && typeof c.id === "string" && TITLE_ID.test(c.id)) {
+        return { type: "resume", app: "prime", id: c.id };
+      }
+      throw new Error("resume needs app youtube|prime and a valid id");
+    case "screensaver":
+      if ((SCREENSAVER_MODES as unknown[]).includes(c.mode)) {
+        return { type: "screensaver", mode: c.mode as ScreensaverMode };
+      }
+      throw new Error("screensaver.mode must be art|clock|off");
     case "volume":
       if (["up", "down", "mute"].includes(c.action as string)) {
         return { type: "volume", action: c.action as "up" | "down" | "mute" };

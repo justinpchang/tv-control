@@ -14,7 +14,7 @@ export class WindowsLauncher implements Launcher {
   private volumeMuted = false;
   private lastError: string | null = null;
 
-  async launch(app: AppId): Promise<void> {
+  async launch(app: AppId, deepUrl?: string): Promise<void> {
     const config = loadConfig();
     const t0 = Date.now();
     try {
@@ -27,7 +27,7 @@ export class WindowsLauncher implements Launcher {
         // ignores --start-fullscreen and accumulates tabs.
         await closeEdge();
         const closedAt = Date.now();
-        const url = config.edgeUrls[app] ?? `https://www.${app}.com`;
+        const url = deepUrl ?? config.edgeUrls[app] ?? `https://www.${app}.com`;
         await this.startDetached(`msedge --start-fullscreen --disable-session-crashed-bubble ${url}`, `Edge ${app}`);
         log.info(`launch ${app}: edge closed in ${closedAt - t0}ms, started in ${Date.now() - closedAt}ms`);
         // --start-fullscreen already covers the screen; focusing is a

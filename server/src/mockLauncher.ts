@@ -9,8 +9,8 @@ export class MockLauncher implements Launcher {
   private activeApp: AppId | "home" | "unknown" = "home";
   private volumeMuted = false;
 
-  async launch(app: AppId): Promise<void> {
-    log.info(`[mock] launch ${app} (focus + fullscreen)`);
+  async launch(app: AppId, url?: string): Promise<void> {
+    log.info(`[mock] launch ${app}${url ? ` at ${url}` : ""} (focus + fullscreen)`);
     this.activeApp = app;
   }
 

@@ -1,6 +1,7 @@
 node_modules/
 dist/
 server/logs/
+server/data/
 server/apps.json
 *.local
 .env

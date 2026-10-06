@@ -15,9 +15,12 @@ the entire PC experience. Samsung LAN control is parked, not a blocker
 - `server/` — Windows control service: WebSocket + `/home.html` on one `PORT`
   (default 8080). `MockLauncher` runs anywhere; `WindowsLauncher` (Edge
   fullscreen, GeForce NOW, PowerShell focus/volume, aggressive `home` recovery)
-  loads only on Windows via `LAUNCHER=windows`.
+  loads only on Windows via `LAUNCHER=windows`. `/home.html` is the TV home:
+  clock, "Jump back in" (persisted in `server/data/home.json`), and an idle
+  screensaver (Art Institute of Chicago paintings, or a drifting clock).
 - `pwa/` — minimal Living Room remote (Vite + plain TS): app launch buttons,
-  volume, Home, per-app YouTube/Prime panels. Talks to `ws://<host>:8080`.
+  volume, Home, per-app YouTube/Prime panels, and a Home panel (Jump back in,
+  screensaver picker). Talks to `ws://<host>:8080`.
 - `extension/` — Edge MV3 adapters. YouTube (`youtube.ts`) and Prime Video
   (`prime.ts`) TV overlays + `background.ts` WS bridge to the service;
   `content.ts` routes per site, Netflix plugs in next.

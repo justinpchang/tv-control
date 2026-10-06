@@ -12,6 +12,9 @@ import {
   type ServerMessage,
   type ServerState,
 } from "@tv-control/shared";
+import { resolve } from "node:path";
+import { loadConfig } from "./config.js";
+import { HomeStore } from "./home.js";
 import type { Launcher } from "./launcher.js";
 import { MockLauncher } from "./mockLauncher.js";
 import { getLogs, log } from "./log.js";
@@ -57,9 +60,28 @@ log.info(`launcher: ${launcher.name}`);
 const adapters = new Map<WebSocket, AppId>();
 const contexts = new Map<AppId, AppContext>();
 
+// Home feed + screensaver. The screensaver starts after idle minutes on the
+// home screen; any phone command (except liveness pings) wakes it.
+const home = new HomeStore(process.env.DATA_DIR ?? resolve(process.cwd(), "data"), () => broadcastHome());
+let screensaverActive = false;
+let lastActivityAt = Date.now();
+
 function currentState(): ServerState {
-  return { ...launcher.getState(), adapters: [...new Set(adapters.values())] };
+  return {
+    ...launcher.getState(),
+    adapters: [...new Set(adapters.values())],
+    screensaver: { mode: home.screensaver, active: screensaverActive },
+  };
 }
+
+function broadcastHome(): void {
+  broadcast(wss, { type: "home", home: home.feed() });
+}
+
+const RESUME_URLS = {
+  youtube: (id: string) => `https://www.youtube.com/watch?v=${id}`,
+  prime: (id: string) => `https://www.primevideo.com/detail/${id}?autoplay=1`,
+};
 
 function relayTargets(): WebSocket[] {
   const active = launcher.getState().activeApp;
@@ -82,9 +104,20 @@ function relayCommand(command: Command): void {
 }
 
 async function handleCommand(wss: WebSocketServer, command: Command): Promise<void> {
+  if (command.type !== "ping") {
+    lastActivityAt = Date.now();
+    screensaverActive = command.type === "screensaver" && command.mode !== "off";
+  }
   switch (command.type) {
     case "launch": await launcher.launch(command.app); break;
-    case "home": await launcher.home(); contexts.clear(); break;
+    case "resume":
+      await launcher.launch(command.app, RESUME_URLS[command.app](command.id));
+      break;
+    case "home":
+      await launcher.home();
+      contexts.clear();
+      break;
+    case "screensaver": home.screensaver = command.mode; break;
     case "volume": await launcher.volume(command.action); break;
     case "fullscreen": await launcher.fullscreen(); break;
     case "ping": break;
@@ -107,16 +140,23 @@ function handleAdapterMessage(wss: WebSocketServer, ws: WebSocket, msg: AdapterM
     return;
   }
   contexts.set(msg.context.app, msg.context);
+  home.observe(msg.context);
   broadcast(wss, { type: "context", context: msg.context });
 }
 
-const homeHtml = readFileSync(new URL("../public/home.html", import.meta.url), "utf8");
+// Read per request: edits to the home page show up on reload, no restart.
+const homeHtmlPath = new URL("../public/home.html", import.meta.url);
 
 const httpServer = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://x");
   if ((req.url === "/home.html" || req.url === "/") && req.method === "GET") {
     res.writeHead(200, { "content-type": "text/html" });
-    res.end(homeHtml);
+    res.end(readFileSync(homeHtmlPath, "utf8"));
+    return;
+  }
+  if (url.pathname === "/api/home" && req.method === "GET") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ state: currentState(), home: home.feed() }));
     return;
   }
   if (url.pathname === "/health" && req.method === "GET") {
@@ -159,6 +199,8 @@ const httpServer = createServer(async (req, res) => {
       await handleCommand(wss, command);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, state: currentState() }));
+      // Same fan-out as a phone command, so curl drives the TV home too.
+      if (command.type !== "ping") broadcast(wss, { type: "state", state: currentState() });
     } catch (e) {
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "bad command" }));
@@ -186,10 +228,22 @@ const heartbeat = setInterval(() => {
 }, 15_000);
 wss.on("close", () => clearInterval(heartbeat));
 
+// Idle check for the screensaver.
+const idleTimer = setInterval(() => {
+  if (screensaverActive || home.screensaver === "off") return;
+  if (launcher.getState().activeApp !== "home") return;
+  if (Date.now() - lastActivityAt < loadConfig().screensaverIdleMin * 60_000) return;
+  screensaverActive = true;
+  log.info(`screensaver: ${home.screensaver} (idle)`);
+  broadcast(wss, { type: "state", state: currentState() });
+}, 10_000);
+wss.on("close", () => clearInterval(idleTimer));
+
 wss.on("connection", (ws) => {
   alive.add(ws);
   ws.on("pong", () => alive.add(ws));
   send(ws, { type: "state", state: currentState() });
+  send(ws, { type: "home", home: home.feed() });
   // A fresh phone that connects mid-session also needs the latest context.
   for (const context of contexts.values()) send(ws, { type: "context", context });
   ws.on("message", async (raw) => {
@@ -219,6 +273,13 @@ wss.on("connection", (ws) => {
     }
   });
 });
+
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    home.flush();
+    process.exit(0);
+  });
+}
 
 httpServer.listen(PORT, () => {
   log.info(`tv-control server on http://localhost:${PORT} (ws on same port)`);

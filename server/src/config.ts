@@ -9,6 +9,8 @@ export interface AppsConfig {
   geforceUri: string;
   geforceExePaths: string[];
   edgeUrls: Record<string, string>;
+  // Minutes idle on the home screen before the screensaver starts.
+  screensaverIdleMin: number;
 }
 
 const DEFAULTS: AppsConfig = {
@@ -22,6 +24,7 @@ const DEFAULTS: AppsConfig = {
     prime: "https://www.primevideo.com",
     youtube: "https://www.youtube.com/",
   },
+  screensaverIdleMin: 5,
 };
 
 export function configPath(): string {
@@ -37,6 +40,9 @@ export function loadConfig(): AppsConfig {
       geforceUri: raw.geforceUri ?? DEFAULTS.geforceUri,
       geforceExePaths: raw.geforceExePaths ?? DEFAULTS.geforceExePaths,
       edgeUrls: { ...DEFAULTS.edgeUrls, ...(raw.edgeUrls ?? {}) },
+      screensaverIdleMin: typeof raw.screensaverIdleMin === "number" && raw.screensaverIdleMin > 0
+        ? raw.screensaverIdleMin
+        : DEFAULTS.screensaverIdleMin,
     };
   } catch (e) {
     log.warn(`apps.json unreadable (${e instanceof Error ? e.message : e}); using defaults`);

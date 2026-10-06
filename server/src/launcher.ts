@@ -1,12 +1,13 @@
 import type { AppId, ServerState } from "@tv-control/shared";
 
 // Launchers report device state; the service adds the live adapter list.
-export type LauncherState = Omit<ServerState, "adapters">;
+export type LauncherState = Omit<ServerState, "adapters" | "screensaver">;
 
 // Platform capability boundary: mock runs anywhere, windows runs on the PC.
 export interface Launcher {
   readonly name: "mock" | "windows";
-  launch(app: AppId): Promise<void>;
+  // url: open the app at a specific page (deep link) instead of its start page.
+  launch(app: AppId, url?: string): Promise<void>;
   home(): Promise<void>;
   volume(action: "up" | "down" | "mute"): Promise<void>;
   // Toggle the active player's fullscreen with a real "f" keypress.

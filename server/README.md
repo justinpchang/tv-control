@@ -19,6 +19,15 @@ WebSocket + `/home.html` on the same `PORT` (default 8080).
 Copy `apps.json.example` to `apps.json` and edit paths/URLs there.
 Reloaded on every launch call — no restart needed.
 
+## Home screen
+
+`/home.html` shows the clock and "Jump back in" (YouTube Recent + Prime
+Continue Watching, remembered in `data/home.json`, gitignored; `DATA_DIR`
+overrides). After `screensaverIdleMin` (apps.json, default 5) idle minutes on
+Home, it shows the screensaver picked on the phone: `art` (public-domain
+paintings from api.artic.edu, fetched by the page) or `clock`. Any phone
+command wakes it.
+
 ## Appliance checklist (OptiPlex, run once)
 
 - Settings → Power: sleep `Never`, screen stays on for the TV.

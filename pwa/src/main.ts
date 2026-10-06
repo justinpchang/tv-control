@@ -6,9 +6,11 @@ import {
   storyboardFrame,
   type AppContext,
   type Command,
+  type HomeFeed,
   type NowPlaying,
   type PrimeContext,
   type PrimeTitle,
+  type ScreensaverMode,
   type ServerMessage,
   type ServerState,
   type YoutubeContext,
@@ -38,6 +40,12 @@ const recentBox = $("#yt-recent-box");
 const recentRow = $("#yt-recent");
 const searchForm = $<HTMLFormElement>("#yt-search");
 const searchInput = $<HTMLInputElement>("#yt-q");
+
+const homePanel = $("#home-panel");
+const homeJumpBox = $("#home-jump-box");
+const homeJump = $("#home-jump");
+const saverOn = $("#saver-on");
+const saverModes = $("#saver-modes");
 
 const pvSection = $("#pv");
 const pvConn = $("#pv-conn");
@@ -77,6 +85,7 @@ let latestState: ServerState | null = null;
 let latestYt: YoutubeContext | null = null;
 let npReceivedAt = 0;
 let latestPv: PrimeContext | null = null;
+let latestHome: HomeFeed | null = null;
 let pvReceivedAt = 0;
 
 function setStatus(kind: "ok" | "wait" | "down", text: string): void {
@@ -119,6 +128,9 @@ function connect(): void {
         render();
       } else if (msg.type === "context") {
         onContext(msg.context);
+      } else if (msg.type === "home") {
+        latestHome = msg.home;
+        render();
       }
     } catch { /* ignore */ }
   };
@@ -164,6 +176,7 @@ function render(): void {
   });
   muteBtn.classList.toggle("on", latestState?.volumeMuted ?? false);
 
+  renderHome(active);
   renderPrime(active);
   const live = latestState?.adapters.includes("youtube") ?? false;
   // After a server restart activeApp is unknown; a live adapter still means
@@ -291,6 +304,42 @@ function renderNowPlaying(np: NowPlaying | null): void {
   npSpeedLabel.textContent = `${np.rate}×`;
   tickTimeline();
 }
+
+// --- Home panel: Jump back in + screensaver picker ---
+
+let homeJumpSig = "";
+
+function renderHome(active: string): void {
+  homePanel.hidden = active !== "home";
+  if (homePanel.hidden) return;
+  const saver = latestState?.screensaver;
+  saverOn.hidden = !saver?.active;
+  saverModes.querySelectorAll<HTMLButtonElement>("button").forEach((b) => {
+    b.classList.toggle("on", b.dataset.mode === saver?.mode);
+  });
+
+  const items = latestHome?.jumpBack ?? [];
+  homeJumpBox.hidden = items.length === 0;
+  const sig = JSON.stringify(items);
+  if (sig === homeJumpSig) return;
+  homeJumpSig = sig;
+  homeJump.innerHTML = "";
+  for (const item of items) {
+    const { btn, thumb } = thumbButton("rc", item.image, item.progress);
+    const dot = document.createElement("b");
+    dot.className = `badge-dot mark ${item.app === "youtube" ? "yt" : "pv"}`;
+    thumb.appendChild(dot);
+    const title = document.createElement("span");
+    title.textContent = item.title;
+    btn.appendChild(title);
+    btn.addEventListener("click", () => send({ type: "resume", app: item.app, id: item.id }));
+    homeJump.appendChild(btn);
+  }
+}
+
+saverModes.querySelectorAll<HTMLButtonElement>("button").forEach((b) => {
+  b.addEventListener("click", () => send({ type: "screensaver", mode: b.dataset.mode as ScreensaverMode }));
+});
 
 // --- Prime panel ---
 

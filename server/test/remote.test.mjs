@@ -3,7 +3,12 @@
 //   npm run build && npm test
 // Uses LAUNCHER=mock so it runs anywhere (Mac CI included).
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Keep home.json (Jump back in, screensaver) out of the real data dir.
+process.env.DATA_DIR = mkdtempSync(join(tmpdir(), "tv-test-"));
 
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -282,6 +287,69 @@ try {
   }
 } finally {
   asvc.kill("SIGTERM");
+}
+
+// --- Part 4: home feed, resume, screensaver ---
+const HOME_PORT = 18084;
+const HOME_DIR = mkdtempSync(join(tmpdir(), "tv-home-"));
+const startHome = () => spawn("node", ["dist/index.js"], {
+  env: { ...process.env, PORT: String(HOME_PORT), LAUNCHER: "mock", DATA_DIR: HOME_DIR },
+  stdio: "ignore",
+});
+const post = (body) => json(`http://localhost:${HOME_PORT}/api/command`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify(body),
+});
+let hsvc = startHome();
+try {
+  await waitFor(`http://localhost:${HOME_PORT}/health`, (r) => r.status === 200 && r.body.ok);
+  const phone = await wsConnect(HOME_PORT);
+  const adapter = await wsConnect(HOME_PORT);
+  try {
+    const feedSeen = wsNext(phone, (m) => m.type === "home" && m.home.jumpBack.length === 2);
+    adapter.send(JSON.stringify({
+      type: "adapterContext",
+      context: {
+        app: "youtube", screen: "browse", query: "", nowPlaying: null, results: [],
+        recent: [
+          { videoId: "dQw4w9WgXcQ", title: "Never", channel: "Rick", thumbnail: "" },
+          { videoId: "9bZkp7q5f0", title: "Gangnam", channel: "PSY", thumbnail: "" },
+        ],
+      },
+    }));
+    const feed = (await feedSeen).home;
+    check("jump back in broadcast", feed.jumpBack[0].id === "dQw4w9WgXcQ" && feed.jumpBack[0].image.includes("i.ytimg.com"));
+  } finally {
+    phone.close();
+    adapter.close();
+  }
+
+  const resumed = await post({ type: "resume", app: "youtube", id: "dQw4w9WgXcQ" });
+  check("resume launches app", resumed.status === 200 && resumed.body.state.activeApp === "youtube");
+  const resumeLog = await json(`http://localhost:${HOME_PORT}/logs?limit=20`);
+  check("resume deep-links", resumeLog.body.logs?.some((e) => e.msg.includes("watch?v=dQw4w9WgXcQ")));
+  check("bad resume rejected", (await post({ type: "resume", app: "prime", id: "../x" })).status === 400);
+
+  const saver = await post({ type: "screensaver", mode: "clock" });
+  check("screensaver starts now", saver.body.state.screensaver.mode === "clock" && saver.body.state.screensaver.active);
+  const woke = await post({ type: "volume", action: "up" });
+  check("any command wakes screensaver", woke.body.state.screensaver.active === false && woke.body.state.screensaver.mode === "clock");
+  check("bad screensaver mode rejected", (await post({ type: "screensaver", mode: "stats" })).status === 400);
+} finally {
+  hsvc.kill("SIGTERM");
+}
+
+// Restart: row and mode come back from home.json.
+await new Promise((r) => setTimeout(r, 500));
+const saved = JSON.parse(readFileSync(join(HOME_DIR, "home.json"), "utf8"));
+check("home.json flushed on exit", saved.screensaver === "clock" && saved.jump.youtube.length === 2);
+hsvc = startHome();
+try {
+  const after = await waitFor(`http://localhost:${HOME_PORT}/api/home`, (r) => r.status === 200);
+  check("home survives restart", after.body.home.jumpBack.length === 2 && after.body.state.screensaver.mode === "clock");
+} finally {
+  hsvc.kill("SIGTERM");
 }
 
 const failed = results.filter((r) => !r).length;

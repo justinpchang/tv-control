@@ -3,14 +3,442 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- artic.edu 403s hotlinked images that carry a Referer. -->
+<meta name="referrer" content="no-referrer" />
 <title>TV Home</title>
+<!--
+  TV home screen + screensaver. Driven entirely by the server socket (no
+  input on the TV): "home" messages fill Jump back in, state.screensaver
+  says when to show the art/clock saver. Art: Art Institute of Chicago
+  public-domain paintings (api.artic.edu, no key), fetched by this page.
+-->
 <style>
-  html, body { margin: 0; height: 100%; background: #0b0d12; color: #f2f4f8;
-    font: 32px/1.4 system-ui, sans-serif; display: grid; place-items: center; }
-  .sub { opacity: .6; font-size: 20px; }
+  :root {
+    --bg: #0b0d12;
+    --text: #f2f4f8;
+    --muted: rgba(242, 244, 248, .62);
+    --card: rgba(255, 255, 255, .07);
+    --line: rgba(255, 255, 255, .12);
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden; cursor: none;
+    background: var(--bg); color: var(--text);
+    font: 1.25vw/1.4 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* --- Ambient backdrop: the art pool, blurred and dimmed --- */
+  .backdrop { position: fixed; inset: 0; overflow: hidden; }
+  .backdrop img {
+    position: absolute; inset: -6%; width: 112%; height: 112%; object-fit: cover;
+    filter: blur(48px) saturate(1.2) brightness(.55); opacity: 0;
+    transition: opacity 3s ease;
+  }
+  .backdrop img.on { opacity: 1; }
+  .backdrop::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(11,13,18,.15) 0%, rgba(11,13,18,.55) 55%, rgba(11,13,18,.92) 100%);
+  }
+
+  /* --- Home --- */
+  .home {
+    position: fixed; inset: 0; padding: 4.5vw 5vw 4vw;
+    display: grid; grid-template-rows: auto 1fr auto; gap: 2vw;
+  }
+  .top { display: flex; justify-content: space-between; align-items: flex-start; }
+  .time { font-size: 7.2vw; font-weight: 300; letter-spacing: -.03em; line-height: 1; font-variant-numeric: tabular-nums; }
+  .time small { font-size: .32em; font-weight: 400; letter-spacing: 0; margin-left: .3em; color: var(--muted); }
+  .date { font-size: 1.7vw; color: var(--muted); margin-top: .6vw; }
+  .greet { text-align: right; font-size: 1.7vw; font-weight: 500; }
+  .greet div { font-size: 1.1vw; color: var(--muted); font-weight: 400; margin-top: .3vw; }
+
+  .jump { align-self: end; }
+  .jump h2, .empty h2 { margin: 0 0 1.1vw; font-size: 1.15vw; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1.4vw; }
+  .card { min-width: 0; }
+  .thumb {
+    position: relative; aspect-ratio: 16/9; border-radius: .8vw; overflow: hidden;
+    background: var(--card); box-shadow: 0 1vw 2.5vw rgba(0,0,0,.45);
+  }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .badge {
+    position: absolute; left: .6vw; top: .6vw; font-size: .75vw; font-weight: 700; letter-spacing: .04em;
+    padding: .15vw .5vw; border-radius: .3vw; background: rgba(0,0,0,.72);
+  }
+  .badge::before { content: ""; display: inline-block; width: .55vw; height: .55vw; border-radius: .15vw; margin-right: .4vw; vertical-align: .02vw; }
+  .badge.youtube::before { background: #ff0033; }
+  .badge.prime::before { background: #00a8e1; }
+  .prog { position: absolute; left: 0; right: 0; bottom: 0; height: .3vw; background: rgba(255,255,255,.25); }
+  .prog i { display: block; height: 100%; background: #00a8e1; }
+  .card .t {
+    margin-top: .8vw; font-size: 1.1vw; font-weight: 600; line-height: 1.3;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .card .s { font-size: .95vw; color: var(--muted); margin-top: .2vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .empty { align-self: end; }
+  .apps { display: flex; gap: 1.4vw; }
+  .apps span {
+    display: flex; align-items: center; gap: .7vw; padding: 1.1vw 1.6vw; border-radius: .8vw;
+    background: var(--card); border: 1px solid var(--line); font-size: 1.3vw; font-weight: 600;
+  }
+  .apps i { width: .9vw; height: .9vw; border-radius: .25vw; }
+
+  .foot { display: flex; justify-content: space-between; font-size: .95vw; color: var(--muted); }
+  .credit { font-style: italic; font-family: var(--serif); }
+
+  /* --- Screensaver --- */
+  .saver { position: fixed; inset: 0; background: #000; opacity: 0; pointer-events: none; transition: opacity 1.2s ease; }
+  .saver.on { opacity: 1; }
+
+  .art { position: absolute; inset: 0; }
+  .slide { position: absolute; inset: 0; opacity: 0; transition: opacity 2.5s ease; overflow: hidden; }
+  .slide.on { opacity: 1; }
+  .slide .fill { position: absolute; inset: -6%; width: 112%; height: 112%; object-fit: cover; filter: blur(60px) brightness(.35); }
+  .slide .piece {
+    position: absolute; inset: 4vh 4vw 4vh 4vw; width: calc(100% - 8vw); height: calc(100% - 8vh);
+    object-fit: contain; filter: drop-shadow(0 2vw 4vw rgba(0,0,0,.6));
+  }
+  /* Slow drift: easier on the eye, and keeps static pixels moving. */
+  .slide.on .piece { animation: drift 75s ease-in-out both; }
+  @keyframes drift { from { transform: scale(1); } to { transform: scale(1.045) translate(.4%, -.3%); } }
+
+  .caption {
+    position: absolute; left: 3.5vw; bottom: 3.5vw; max-width: 34vw; padding: 1.6vw 1.9vw;
+    background: rgba(8, 9, 12, .72); backdrop-filter: blur(14px); border-radius: 1vw;
+    border: 1px solid rgba(255,255,255,.08);
+    opacity: 0;
+  }
+  /* Over a landscape piece the blurb shows for ~20s, then leaves it clear. */
+  .slide.on .caption { animation: caption 60s ease both; }
+  @keyframes caption { 0%, 1.5% { opacity: 0; } 4%, 33% { opacity: 1; } 37%, 100% { opacity: 0; } }
+  /* Portrait pieces leave room at the side: caption sits beside and stays. */
+  .slide.tall .piece { left: 40vw; width: calc(100% - 44vw); }
+  .slide.tall .caption { left: 5vw; bottom: auto; top: 50%; max-width: 31vw; transform: translateY(-50%); }
+  .slide.tall.on .caption { animation: caption-stay 2s ease 1s both; }
+  @keyframes caption-stay { from { opacity: 0; } to { opacity: 1; } }
+  .caption .ct { font-family: var(--serif); font-style: italic; font-size: 1.9vw; line-height: 1.15; }
+  .caption .ca { font-size: 1.1vw; font-weight: 600; margin-top: .6vw; }
+  .caption .cd { font-size: .9vw; color: var(--muted); margin-top: .1vw; }
+  .caption .cb {
+    font-family: var(--serif); font-size: 1.02vw; line-height: 1.5; color: rgba(242,244,248,.82); margin-top: .9vw;
+    display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .caption .src { font-size: .72vw; color: rgba(242,244,248,.4); margin-top: .8vw; letter-spacing: .04em; }
+  .art .mini { position: absolute; right: 3.5vw; bottom: 3.2vw; font-size: 2.2vw; font-weight: 300; color: rgba(255,255,255,.75); text-shadow: 0 0 1vw rgba(0,0,0,.8); font-variant-numeric: tabular-nums; }
+
+  .clock { position: absolute; inset: 0; display: grid; place-items: center; }
+  .clock > div { text-align: center; transition: transform 4s ease; }
+  .clock .time { font-size: 13vw; font-weight: 200; color: rgba(255,255,255,.88); }
+  .clock .date { font-size: 2vw; color: rgba(255,255,255,.45); margin-top: 1vw; }
 </style>
 </head>
 <body>
-  <div>TV Home<div class="sub">Use the phone remote.</div></div>
+  <div class="backdrop" id="backdrop"><img alt="" /><img alt="" /></div>
+
+  <main class="home">
+    <header class="top">
+      <div>
+        <div class="time" data-clock></div>
+        <div class="date" data-date></div>
+      </div>
+      <div class="greet"><span id="greet"></span><div>Use your phone remote</div></div>
+    </header>
+
+    <div></div>
+
+    <section class="jump" id="jump" hidden>
+      <h2>Jump back in</h2>
+      <div class="row" id="row"></div>
+    </section>
+
+    <section class="empty" id="empty">
+      <h2>Ready when you are</h2>
+      <div class="apps">
+        <span><i style="background:#ff0033"></i>YouTube</span>
+        <span><i style="background:#e50914"></i>Netflix</span>
+        <span><i style="background:#00a8e1"></i>Prime Video</span>
+        <span><i style="background:#76b900"></i>GeForce NOW</span>
+      </div>
+    </section>
+
+    <footer class="foot"><span id="conn"></span><span class="credit" id="credit"></span></footer>
+  </main>
+
+  <div class="saver" id="saver">
+    <div class="art" id="art" hidden>
+      <div class="slide"></div><div class="slide"></div>
+      <div class="mini" data-clock-short></div>
+    </div>
+    <div class="clock" id="clock" hidden>
+      <div><div class="time" data-clock></div><div class="date" data-date></div></div>
+    </div>
+  </div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+// --- Clock ---
+
+function tickClock() {
+  const now = new Date();
+  const parts = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).split(" ");
+  for (const el of document.querySelectorAll("[data-clock]")) {
+    el.innerHTML = `${parts[0]}<small>${parts[1] ?? ""}</small>`;
+  }
+  for (const el of document.querySelectorAll("[data-clock-short]")) el.textContent = parts[0];
+  const date = now.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  for (const el of document.querySelectorAll("[data-date]")) el.textContent = date;
+  const h = now.getHours();
+  $("greet").textContent = h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+}
+tickClock();
+setInterval(tickClock, 5000);
+
+// --- Jump back in ---
+
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text) e.textContent = text;
+  return e;
+};
+
+function youtubeImage(item, img) {
+  // Sharper than the 320px list thumbnail; not every video has it.
+  // Missing sizes come back as a 120px gray placeholder, not an error.
+  const fallback = () => { img.onerror = img.onload = null; img.src = item.image; };
+  img.onerror = fallback;
+  img.onload = () => { if (img.naturalWidth < 200) fallback(); };
+  img.src = `https://i.ytimg.com/vi/${item.id}/hq720.jpg`;
+}
+
+let jumpSig = "";
+function renderJump(items) {
+  const shown = items.slice(0, 5);
+  $("jump").hidden = shown.length === 0;
+  $("empty").hidden = shown.length > 0;
+  const sig = JSON.stringify(shown);
+  if (sig === jumpSig) return;
+  jumpSig = sig;
+  const row = $("row");
+  row.innerHTML = "";
+  for (const item of shown) {
+    const card = el("div", "card");
+    const thumb = el("div", "thumb");
+    const img = el("img");
+    img.alt = "";
+    if (item.app === "youtube") youtubeImage(item, img);
+    else if (item.image) img.src = item.image;
+    thumb.append(img, el("span", `badge ${item.app}`, item.app === "youtube" ? "YouTube" : "Prime Video"));
+    if (item.progress !== null) {
+      const bar = el("div", "prog");
+      const fill = el("i");
+      fill.style.width = `${item.progress}%`;
+      bar.append(fill);
+      thumb.append(bar);
+    }
+    card.append(thumb, el("div", "t", item.title), el("div", "s", item.subtitle));
+    row.append(card);
+  }
+}
+
+// --- Art pool (Art Institute of Chicago) ---
+
+const ART_CACHE = "tv-art-v1";
+const ART_QUERY = {
+  query: { bool: { must: [
+    { term: { is_public_domain: true } },
+    { term: { "classification_title.keyword": "painting" } },
+    { exists: { field: "short_description" } },
+    { exists: { field: "image_id" } },
+  ] } },
+};
+const ART_FIELDS = "id,title,artist_display,date_display,place_of_origin,image_id,short_description";
+
+const store = {
+  get(key) { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } },
+  set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ } },
+};
+
+async function loadArtPool() {
+  const cached = store.get(ART_CACHE);
+  if (cached && Date.now() - cached.at < 7 * 86400_000 && cached.items.length) return cached.items;
+  const params = encodeURIComponent(JSON.stringify(ART_QUERY));
+  const items = [];
+  for (let page = 1; page <= 3; page++) {
+    const r = await fetch(`https://api.artic.edu/api/v1/artworks/search?params=${params}&limit=100&page=${page}&fields=${ART_FIELDS}`);
+    if (!r.ok) break;
+    const body = await r.json();
+    items.push(...body.data.filter((a) => a.image_id));
+    if (page >= (body.pagination.total_pages ?? 1)) break;
+  }
+  if (items.length) store.set(ART_CACHE, { at: Date.now(), items });
+  return items;
+}
+
+// Shuffled once per pool, position remembered so a reload doesn't restart it.
+let pool = [];
+function nextArt() {
+  if (!pool.length) return null;
+  let pos = store.get("tv-art-pos") ?? { i: 0, order: [] };
+  if (pos.order.length !== pool.length || pos.i >= pos.order.length) {
+    const o = pool.map((_, i) => i);
+    for (let i = o.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [o[i], o[j]] = [o[j], o[i]]; }
+    pos = { i: 0, order: o };
+  }
+  const art = pool[pos.order[pos.i]];
+  store.set("tv-art-pos", { i: pos.i + 1, order: pos.order });
+  return art;
+}
+
+const artUrl = (a) => `https://www.artic.edu/iiif/2/${a.image_id}/full/1686,/0/default.jpg`;
+
+function preload(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(url);
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+
+// Next artwork whose image actually loads (a few retries, then give up).
+async function nextLoadedArt() {
+  for (let tries = 0; tries < 4; tries++) {
+    const art = nextArt();
+    if (!art) return null;
+    try { await preload(artUrl(art)); return art; } catch { /* skip it */ }
+  }
+  return null;
+}
+
+// "Claude Monet (French, 1840–1926)" / "Amedeo Modigliani\nItalian, 1884–1920"
+function splitArtist(display) {
+  const s = (display || "Unknown artist").trim();
+  const nl = s.indexOf("\n");
+  if (nl > 0) return [s.slice(0, nl).trim(), s.slice(nl + 1).trim()];
+  const m = /^(.*?)\s*\((.*)\)\s*$/.exec(s);
+  return m ? [m[1], m[2]] : [s, ""];
+}
+
+// --- Home backdrop: the same pool, blurred, changing every few minutes ---
+
+let backdropIdx = 0;
+async function cycleBackdrop() {
+  const art = await nextLoadedArt();
+  if (!art) return;
+  const imgs = $("backdrop").querySelectorAll("img");
+  const next = imgs[backdropIdx = 1 - backdropIdx];
+  next.src = artUrl(art);
+  next.classList.add("on");
+  imgs[1 - backdropIdx].classList.remove("on");
+  $("credit").textContent = `${art.title} — ${splitArtist(art.artist_display)[0]}`;
+}
+
+// --- Screensaver ---
+
+const ART_EVERY_MS = 60_000;
+let saverMode = "off";
+let artTimer = 0;
+let slideIdx = 0;
+let clockTimer = 0;
+
+async function showArt() {
+  const art = await nextLoadedArt();
+  if (saverMode !== "art") return;
+  if (!art) { setSaver("clock"); return; }
+  const slides = $("art").querySelectorAll(".slide");
+  const slide = slides[slideIdx = 1 - slideIdx];
+  const [name, detail] = splitArtist(art.artist_display);
+  slide.innerHTML = "";
+  const fill = el("img", "fill");
+  const piece = el("img", "piece");
+  fill.src = piece.src = artUrl(art);
+  // Already preloaded, so dimensions are ready by the time it decodes.
+  piece.onload = () => slide.classList.toggle("tall", piece.naturalWidth / piece.naturalHeight < 1.15);
+  fill.alt = "";
+  piece.alt = art.title;
+  const cap = el("div", "caption");
+  cap.append(
+    el("div", "ct", art.title),
+    el("div", "ca", name),
+    el("div", "cd", [art.date_display, detail].filter(Boolean).join(" · ")),
+    el("div", "cb", art.short_description.replace(/<[^>]+>/g, "")),
+    el("div", "src", "ART INSTITUTE OF CHICAGO"),
+  );
+  slide.append(fill, piece, cap);
+  slide.classList.add("on");
+  slides[1 - slideIdx].classList.remove("on");
+  artTimer = setTimeout(showArt, ART_EVERY_MS);
+}
+
+// Clock saver drifts around the screen so nothing sits still for hours.
+function driftClock() {
+  const x = (Math.random() - .5) * 40;
+  const y = (Math.random() - .5) * 40;
+  $("clock").firstElementChild.style.transform = `translate(${x}vw, ${y}vh)`;
+}
+
+function setSaver(mode) {
+  if (mode === saverMode) return;
+  saverMode = mode;
+  clearTimeout(artTimer);
+  clearInterval(clockTimer);
+  $("saver").classList.toggle("on", mode !== "off");
+  $("art").hidden = mode !== "art";
+  $("clock").hidden = mode !== "clock";
+  if (mode === "art") {
+    showArt();
+  } else if (mode === "clock") {
+    driftClock();
+    clockTimer = setInterval(driftClock, 60_000);
+  }
+}
+
+// --- Server ---
+
+// What the server asked for; art shows the clock until the pool has loaded.
+let wantedSaver = "off";
+function applySaver() {
+  setSaver(wantedSaver === "art" && !pool.length ? "clock" : wantedSaver);
+}
+
+function onState(state) {
+  const s = state.screensaver;
+  wantedSaver = s && s.active ? s.mode : "off";
+  applySaver();
+}
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}`);
+  ws.onopen = () => { $("conn").textContent = ""; };
+  ws.onmessage = (ev) => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "state") onState(msg.state);
+      else if (msg.type === "home") renderJump(msg.home.jumpBack);
+    } catch { /* ignore */ }
+  };
+  ws.onclose = () => {
+    $("conn").textContent = "Reconnecting to TV service…";
+    setTimeout(connect, 2000);
+  };
+}
+
+connect();
+loadArtPool()
+  .then((items) => { pool = items; applySaver(); })
+  .catch(() => { /* offline: no backdrop, clock saver only */ })
+  .finally(() => {
+    cycleBackdrop();
+    setInterval(cycleBackdrop, 3 * 60_000);
+  });
+</script>
 </body>
 </html>
