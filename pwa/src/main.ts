@@ -22,6 +22,8 @@ const npPlay = $("#np-play");
 const npCc = $<HTMLButtonElement>("#np-cc");
 const npQuality = $<HTMLSelectElement>("#np-quality");
 const npQualityLabel = $("#np-quality-label");
+const recentBox = $("#yt-recent-box");
+const recentRow = $("#yt-recent");
 const searchForm = $<HTMLFormElement>("#yt-search");
 const searchInput = $<HTMLInputElement>("#yt-q");
 
@@ -130,6 +132,35 @@ function render(): void {
   ytConn.textContent = live ? "" : "Waiting for TV…";
   ytConn.hidden = live;
   renderNowPlaying(latestYt?.nowPlaying ?? null);
+  renderRecent();
+}
+
+// Horizontal strip of recently watched videos; tap to play on the TV. The
+// video already on screen is left out.
+let recentSig = "";
+
+function renderRecent(): void {
+  const playing = latestYt?.nowPlaying?.videoId;
+  const items = (latestYt?.recent ?? []).filter((r) => r.videoId !== playing).slice(0, 10);
+  recentBox.hidden = items.length === 0;
+  const sig = items.map((r) => r.videoId).join(",");
+  if (sig === recentSig) return;
+  recentSig = sig;
+  recentRow.innerHTML = "";
+  for (const item of items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "rc";
+    const img = document.createElement("img");
+    img.alt = "";
+    img.loading = "lazy";
+    img.src = item.thumbnail || `https://i.ytimg.com/vi/${item.videoId}/mqdefault.jpg`;
+    const title = document.createElement("span");
+    title.textContent = item.title;
+    btn.append(img, title);
+    btn.addEventListener("click", () => send({ type: "openVideo", videoId: item.videoId }));
+    recentRow.appendChild(btn);
+  }
 }
 
 const QUALITY_LABELS: Record<string, string> = {

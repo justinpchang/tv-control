@@ -60,6 +60,8 @@ export interface YoutubeContext {
   screen: "browse" | "search" | "watch";
   query: string;
   nowPlaying: NowPlaying | null;
+  // Recently watched, newest first (kept by the extension, capped at 12).
+  recent: VideoItem[];
 }
 
 // Union grows as netflix/prime adapters land.
@@ -192,6 +194,9 @@ export function parseAppContext(input: unknown): AppContext {
     screen: c.screen,
     query: typeof c.query === "string" ? c.query.slice(0, 200) : "",
     nowPlaying,
+    recent: Array.isArray(c.recent)
+      ? c.recent.map(parseVideoItem).filter((v): v is VideoItem => v !== null).slice(0, 12)
+      : [],
   };
 }
 

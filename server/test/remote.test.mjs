@@ -157,12 +157,14 @@ try {
       type: "adapterContext",
       context: {
         app: "youtube", screen: "browse", query: "", nowPlaying: null,
+        recent: [{ videoId: "dQw4w9WgXcQ", title: "t", channel: "c", thumbnail: "" }, { videoId: "bad id!" }],
       },
     }));
     check("context broadcast to phone", (await ctxSeen).context.screen === "browse");
 
     const withCtx = await json(`http://localhost:${ADAPTER_PORT}/api/state`);
     check("context in /api/state", withCtx.body.contexts?.youtube?.screen === "browse");
+    check("recent keeps valid items only", withCtx.body.contexts?.youtube?.recent?.length === 1);
 
     const badSeek = await json(`http://localhost:${ADAPTER_PORT}/api/command`, {
       method: "POST",

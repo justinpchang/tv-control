@@ -22,6 +22,8 @@ interface AdapterState {
   tvMode: boolean;
   qualities: string[];
   quality: string;
+  recent: VideoItem[];
+  lastRecorded: string;
   lastReport: string;
 }
 
@@ -34,8 +36,14 @@ const state: AdapterState = {
   tvMode: true,
   qualities: [],
   quality: "",
+  recent: [],
+  lastRecorded: "",
   lastReport: "",
 };
+
+// Same key the old history used, so earlier entries carry over.
+const RECENT_KEY = "tvyt.history";
+const RECENT_CAP = 12;
 
 // --- Bridge to the background service worker ---
 
@@ -54,6 +62,7 @@ function reportContext(force = false): void {
     screen: state.screen,
     query: state.query,
     nowPlaying,
+    recent: state.recent,
   };
   // Round playback time so timeupdate doesn't spam the socket every frame.
   const key = JSON.stringify({ ...context, nowPlaying: nowPlaying && { ...nowPlaying, currentTimeSec: Math.floor(nowPlaying.currentTimeSec) } });
@@ -237,6 +246,40 @@ function readNowPlaying(): NowPlaying | null {
     quality: state.quality,
     qualities: state.qualities,
   };
+}
+
+// --- Recently watched (chrome.storage.local, survives restarts) ---
+
+function loadRecent(): void {
+  try {
+    chrome.storage.local.get([RECENT_KEY], (res) => {
+      const raw = res[RECENT_KEY];
+      if (!Array.isArray(raw)) return;
+      state.recent = raw
+        .filter((v): v is VideoItem => typeof v?.videoId === "string" && typeof v?.title === "string")
+        .map(({ videoId, title, channel, thumbnail }) => ({ videoId, title, channel: channel ?? "", thumbnail: thumbnail ?? "" }))
+        .slice(0, RECENT_CAP);
+      reportContext(true);
+    });
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+// Count a video once it has really played (10s, not an ad), once per visit.
+function maybeRecordRecent(): void {
+  const np = readNowPlaying();
+  if (!np || np.videoId === state.lastRecorded || np.title === np.videoId) return;
+  if (np.currentTimeSec < 10 || document.querySelector("#movie_player.ad-showing")) return;
+  state.lastRecorded = np.videoId;
+  const item: VideoItem = { videoId: np.videoId, title: np.title, channel: np.channel, thumbnail: np.thumbnail };
+  state.recent = [item, ...state.recent.filter((r) => r.videoId !== item.videoId)].slice(0, RECENT_CAP);
+  try {
+    chrome.storage.local.set({ [RECENT_KEY]: state.recent });
+  } catch {
+    /* ignore */
+  }
+  reportContext(true);
 }
 
 // --- Quality via the MAIN-world bridge (ytMain.ts) ---
@@ -456,6 +499,20 @@ function toggleCaptions(): void {
   toast(readCaptions() ? "Captions on" : "Captions off");
 }
 
+// The service sends a real F13 keypress for "fullscreen" (see
+// WindowsLauncher.fullscreen). Catching it in capture phase works wherever
+// focus is, and the trusted key grants the activation the player's own
+// requestFullscreen needs.
+function onFullscreenKey(e: KeyboardEvent): void {
+  if (!e.isTrusted || e.key !== "F13") return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  const btn = document.querySelector<HTMLElement>(".ytp-fullscreen-button");
+  if (state.screen === "watch" && btn) btn.click();
+  else if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+  else toast("Open a video to go fullscreen");
+}
+
 function setQuality(level: string): void {
   requestQuality(level);
   toast(level === "auto" ? "Quality: Auto" : `Quality: ${level}`);
@@ -614,6 +671,7 @@ function bindVideo(): void {
   });
   v.addEventListener("timeupdate", () => {
     renderMini();
+    maybeRecordRecent();
     reportContext();
   });
   // New video loaded or the stream's resolution changed: re-read qualities.
@@ -628,6 +686,8 @@ const HEARTBEAT_MS = 20_000;
 
 export function startYoutubeAdapter(): void {
   ensureStyle();
+  loadRecent();
+  window.addEventListener("keydown", onFullscreenKey, true);
   document.addEventListener("tvyt:quality", onQualityInfo);
   document.addEventListener("fullscreenchange", rehostOverlay);
   postToBackground({ kind: "tvHello", app: "youtube" });
