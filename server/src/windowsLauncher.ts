@@ -94,12 +94,12 @@ export class WindowsLauncher implements Launcher {
   // Real keystroke to the app window, so the page gets a user gesture that
   // page-initiated requestFullscreen lacks. YouTube's own "f" hotkey is
   // flaky (ignored when focus sits in an input or before player focus), so
-  // there the extension catches an otherwise-unused F13 and clicks the
-  // player's fullscreen button itself. Other sites get their "f" hotkey.
+  // the extension adapters (YouTube, Prime) catch an otherwise-unused F13
+  // and drive the player's own fullscreen. Other sites get their "f" hotkey.
   async fullscreen(): Promise<void> {
     const title = WINDOW_TITLES[this.activeApp as AppId];
     const activate = title ? `[void]$s.AppActivate('${title}');` : "";
-    const key = this.activeApp === "youtube" ? "{F13}" : "f";
+    const key = this.activeApp === "youtube" || this.activeApp === "prime" ? "{F13}" : "f";
     await runPs(`$s = New-Object -ComObject WScript.Shell; ${activate} $s.SendKeys('${key}')`);
   }
 

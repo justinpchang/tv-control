@@ -1,12 +1,14 @@
-// Living Room remote: app launchers, Home + volume, and a YouTube panel that
-// appears only while YouTube is the active app. The panel renders the adapter
-// context pushed by the server (now playing, captions, quality).
+// Living Room remote: app launchers, Home + volume, and a per-app panel
+// (YouTube, Prime Video) that appears only while that app is active. Panels
+// render the adapter context pushed by the server.
 
 import {
   storyboardFrame,
   type AppContext,
   type Command,
   type NowPlaying,
+  type PrimeContext,
+  type PrimeTitle,
   type ServerMessage,
   type ServerState,
   type YoutubeContext,
@@ -23,16 +25,12 @@ const npBox = $("#yt-now");
 const npThumb = $<HTMLImageElement>("#np-thumb");
 const npTitle = $("#np-title");
 const npChannel = $("#np-channel");
-const npScrub = $<HTMLInputElement>("#np-scrub");
-const npCur = $("#np-cur");
-const npDur = $("#np-dur");
 const npPlay = $("#np-play");
 const npCc = $<HTMLButtonElement>("#np-cc");
 const npQuality = $<HTMLSelectElement>("#np-quality");
 const npQualityLabel = $("#np-quality-label");
 const npSpeed = $<HTMLSelectElement>("#np-speed");
 const npSpeedLabel = $("#np-speed-label");
-const npPreview = $("#np-preview");
 const resultsBox = $("#yt-results-box");
 const resultsTitle = $("#yt-results-title");
 const resultsList = $("#yt-results");
@@ -40,6 +38,31 @@ const recentBox = $("#yt-recent-box");
 const recentRow = $("#yt-recent");
 const searchForm = $<HTMLFormElement>("#yt-search");
 const searchInput = $<HTMLInputElement>("#yt-q");
+
+const pvSection = $("#pv");
+const pvConn = $("#pv-conn");
+const pvNow = $("#pv-now");
+const pvNpTitle = $("#pv-np-title");
+const pvNpEpisode = $("#pv-np-episode");
+const pvAd = $("#pv-ad");
+const pvPlay = $("#pv-play");
+const pvCc = $("#pv-cc");
+const pvSkip = $("#pv-skip");
+const pvSpeed = $<HTMLSelectElement>("#pv-speed");
+const pvSpeedLabel = $("#pv-speed-label");
+const pvResultsBox = $("#pv-results-box");
+const pvResultsTitle = $("#pv-results-title");
+const pvResults = $("#pv-results");
+const pvDetail = $("#pv-detail");
+const pvDTitle = $("#pv-d-title");
+const pvDEnt = $("#pv-d-ent");
+const pvDPlay = $<HTMLButtonElement>("#pv-d-play");
+const pvDSeasons = $("#pv-d-seasons");
+const pvDEpisodes = $("#pv-d-episodes");
+const pvContinueBox = $("#pv-continue-box");
+const pvContinue = $("#pv-continue");
+const pvSearchForm = $<HTMLFormElement>("#pv-search");
+const pvSearchInput = $<HTMLInputElement>("#pv-q");
 
 // --- Connection ---
 
@@ -53,6 +76,8 @@ let lastMessageAt = 0;
 let latestState: ServerState | null = null;
 let latestYt: YoutubeContext | null = null;
 let npReceivedAt = 0;
+let latestPv: PrimeContext | null = null;
+let pvReceivedAt = 0;
 
 function setStatus(kind: "ok" | "wait" | "down", text: string): void {
   statusEl.dataset.kind = kind;
@@ -122,9 +147,13 @@ window.setInterval(checkAlive, 15_000);
 // --- Rendering ---
 
 function onContext(context: AppContext): void {
-  if (context.app !== "youtube") return;
-  latestYt = context;
-  npReceivedAt = Date.now();
+  if (context.app === "youtube") {
+    latestYt = context;
+    npReceivedAt = Date.now();
+  } else {
+    latestPv = context;
+    pvReceivedAt = Date.now();
+  }
   render();
 }
 
@@ -135,6 +164,7 @@ function render(): void {
   });
   muteBtn.classList.toggle("on", latestState?.volumeMuted ?? false);
 
+  renderPrime(active);
   const live = latestState?.adapters.includes("youtube") ?? false;
   // After a server restart activeApp is unknown; a live adapter still means
   // YouTube is what's on screen.
@@ -262,85 +292,265 @@ function renderNowPlaying(np: NowPlaying | null): void {
   tickTimeline();
 }
 
-// --- Timeline: interpolated between context updates, draggable to seek ---
+// --- Prime panel ---
 
-let scrubbing = false;
-let scrubHoldUntil = 0;
+function renderPrime(active: string): void {
+  const live = latestState?.adapters.includes("prime") ?? false;
+  const show = active === "prime" || (active === "unknown" && live && !latestState?.adapters.includes("youtube"));
+  pvSection.hidden = !show;
+  if (!show) return;
+  pvSection.classList.toggle("offline", !live);
+  pvConn.textContent = live ? "" : "Waiting for TV…";
+  pvConn.hidden = live;
+  const pv = latestPv;
+  const np = pv?.screen === "watch" ? pv.nowPlaying : null;
 
-function currentTime(np: NowPlaying): number {
-  const drift = np.paused ? 0 : (Date.now() - npReceivedAt) / 1000;
-  return Math.min(np.durationSec, np.currentTimeSec + drift);
+  pvNow.hidden = np === null;
+  if (np) {
+    pvNpTitle.textContent = np.title;
+    pvNpEpisode.textContent = np.episode;
+    pvAd.hidden = !np.ad;
+    pvPlay.classList.toggle("paused", np.paused);
+    pvCc.classList.toggle("on", np.captions);
+    // Skip Intro/Recap when Prime offers it; otherwise next episode (shows only).
+    pvSkip.textContent = np.skip || "Next ep";
+    pvSkip.hidden = !np.skip && !np.episode;
+    pvSpeed.value = String(np.rate);
+    pvSpeedLabel.textContent = `${np.rate}×`;
+    pvTimeline.tick();
+  }
+
+  renderPvResults(pv?.screen === "search" ? pv.results : [], pv?.query ?? "");
+  renderPvDetail(pv?.screen === "detail" ? pv : null);
+  renderPvContinue(pv?.screen === "watch" ? [] : pv?.continueWatching ?? []);
 }
 
-function tickTimeline(): void {
-  const np = latestYt?.nowPlaying;
-  if (!np || scrubbing || Date.now() < scrubHoldUntil) return;
-  const t = currentTime(np);
-  npScrub.value = String(np.durationSec > 0 ? Math.round((t / np.durationSec) * 1000) : 0);
-  npScrub.style.setProperty("--pct", `${Number(npScrub.value) / 10}%`);
-  npCur.textContent = fmtTime(t);
-  npDur.textContent = np.durationSec > 0 ? fmtTime(np.durationSec) : "--:--";
-}
-window.setInterval(tickTimeline, 250);
-
-// Preview frame over the thumb while dragging (storyboard sprite at native
-// size, scaled into the frame box), mirrored to the TV via throttled scrubs.
-const SCRUB_SEND_MS = 120;
-let lastScrubSent = 0;
-let pendingScrub = 0;
-
-function showPreview(np: NowPlaying, t: number): void {
-  const pct = Number(npScrub.value) / 10;
-  npPreview.hidden = false;
-  npPreview.style.left = `clamp(52px, ${pct}%, calc(100% - 52px))`;
-  npPreview.querySelector("span")!.textContent = fmtTime(t);
-  const frameBox = npPreview.querySelector<HTMLElement>(".frame")!;
-  const sprite = frameBox.firstElementChild as HTMLElement;
-  const sb = np.storyboard;
-  frameBox.hidden = !sb;
-  if (!sb) return;
-  const f = storyboardFrame(sb, t, np.durationSec);
-  // Box height is fixed; width follows the frames (vertical videos too).
-  frameBox.style.aspectRatio = `${sb.width} / ${sb.height}`;
-  sprite.style.width = `${sb.width}px`;
-  sprite.style.height = `${sb.height}px`;
-  sprite.style.backgroundImage = `url("${f.url}")`;
-  sprite.style.backgroundPosition = `-${f.x}px -${f.y}px`;
-  sprite.style.transform = `scale(${frameBox.clientHeight / sb.height})`;
+function thumbButton(className: string, image: string, progress: number | null): { btn: HTMLButtonElement; thumb: HTMLElement } {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = className;
+  const thumb = document.createElement("div");
+  thumb.className = className === "rc" ? "rc-thumb" : "res-thumb";
+  const img = document.createElement("img");
+  img.alt = "";
+  img.loading = "lazy";
+  if (image) img.src = image;
+  thumb.appendChild(img);
+  if (progress !== null) {
+    const bar = document.createElement("div");
+    bar.className = "prog";
+    const fill = document.createElement("i");
+    fill.style.width = `${progress}%`;
+    bar.appendChild(fill);
+    thumb.appendChild(bar);
+  }
+  btn.appendChild(thumb);
+  return { btn, thumb };
 }
 
-function sendScrub(seconds: number): void {
-  window.clearTimeout(pendingScrub);
-  const wait = SCRUB_SEND_MS - (Date.now() - lastScrubSent);
-  if (wait <= 0) {
-    lastScrubSent = Date.now();
-    send({ type: "scrub", seconds });
-  } else {
-    pendingScrub = window.setTimeout(() => sendScrub(seconds), wait);
+function resRow(image: string, progress: number | null, title: string, sub: string, onTap: () => void): HTMLButtonElement {
+  const { btn } = thumbButton("res", image, progress);
+  const text = document.createElement("div");
+  text.className = "res-text";
+  const t = document.createElement("span");
+  t.className = "res-title";
+  t.textContent = title;
+  const s = document.createElement("span");
+  s.className = "res-sub";
+  s.textContent = sub;
+  text.append(t, s);
+  btn.appendChild(text);
+  btn.addEventListener("click", onTap);
+  return btn;
+}
+
+let pvResultsSig = "";
+
+function renderPvResults(items: PrimeTitle[], query: string): void {
+  pvResultsBox.hidden = items.length === 0;
+  pvResultsTitle.textContent = query ? `Results for “${query}”` : "Results";
+  const sig = items.map((r) => r.titleId).join(",");
+  if (sig === pvResultsSig) return;
+  pvResultsSig = sig;
+  pvResults.innerHTML = "";
+  pvResults.scrollTop = 0;
+  for (const item of items) {
+    const sub = [item.meta, item.entitled ? "" : "Paid add-on"].filter(Boolean).join(" · ");
+    pvResults.appendChild(resRow(item.image, item.progress, item.title, sub,
+      () => send({ type: "openTitle", titleId: item.titleId, play: false })));
   }
 }
 
-npScrub.addEventListener("pointerdown", () => { scrubbing = true; });
-npScrub.addEventListener("input", () => {
-  scrubbing = true;
-  const np = latestYt?.nowPlaying;
-  npScrub.style.setProperty("--pct", `${Number(npScrub.value) / 10}%`);
-  if (!np || np.durationSec <= 0) return;
-  const t = (Number(npScrub.value) / 1000) * np.durationSec;
-  npCur.textContent = fmtTime(t);
-  showPreview(np, t);
-  sendScrub(Math.round(t));
+let pvDetailSig = "";
+
+function renderPvDetail(pv: PrimeContext | null): void {
+  const d = pv?.detail ?? null;
+  pvDetail.hidden = d === null;
+  if (!d) return;
+  const sig = JSON.stringify(d);
+  if (sig === pvDetailSig) return;
+  pvDetailSig = sig;
+  pvDTitle.textContent = d.title;
+  pvDEnt.textContent = d.entitlement;
+  pvDPlay.hidden = !d.playLabel;
+  pvDPlay.querySelector("span")!.textContent = d.playLabel;
+  pvDPlay.onclick = () => send({ type: "openTitle", titleId: d.titleId, play: true });
+  pvDSeasons.innerHTML = "";
+  pvDSeasons.hidden = d.seasons.length < 2;
+  for (const season of d.seasons) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = season.label;
+    b.classList.toggle("on", season.current);
+    b.addEventListener("click", () => { if (!season.current) send({ type: "openTitle", titleId: season.titleId, play: false }); });
+    pvDSeasons.appendChild(b);
+  }
+  pvDEpisodes.innerHTML = "";
+  pvDEpisodes.hidden = d.episodes.length === 0;
+  for (const ep of d.episodes) {
+    pvDEpisodes.appendChild(resRow(ep.image, ep.progress, ep.title, ep.meta,
+      () => send({ type: "openTitle", titleId: ep.titleId, play: true })));
+  }
+}
+
+let pvContinueSig = "";
+
+function renderPvContinue(items: PrimeTitle[]): void {
+  pvContinueBox.hidden = items.length === 0;
+  const sig = items.map((r) => `${r.titleId}:${r.progress}`).join(",");
+  if (sig === pvContinueSig) return;
+  pvContinueSig = sig;
+  pvContinue.innerHTML = "";
+  for (const item of items) {
+    const { btn } = thumbButton("rc", item.image, item.progress);
+    const title = document.createElement("span");
+    title.textContent = item.title;
+    btn.appendChild(title);
+    btn.addEventListener("click", () => send({ type: "openTitle", titleId: item.titleId, play: false }));
+    pvContinue.appendChild(btn);
+  }
+}
+
+pvSpeed.addEventListener("change", () => {
+  const rate = Number(pvSpeed.value);
+  if (rate > 0) send({ type: "speed", rate });
 });
-npScrub.addEventListener("change", () => {
-  scrubbing = false;
-  npPreview.hidden = true;
-  window.clearTimeout(pendingScrub);
-  const np = latestYt?.nowPlaying;
-  if (!np || np.durationSec <= 0) return;
-  // Hold the thumb where it was dropped until the TV reports the new spot.
-  scrubHoldUntil = Date.now() + 1500;
-  send({ type: "seekTo", seconds: Math.round((Number(npScrub.value) / 1000) * np.durationSec) });
-});
+
+// --- Timeline: interpolated between context updates, draggable to seek ---
+
+interface TimelineClock {
+  currentTimeSec: number;
+  durationSec: number;
+  paused: boolean;
+}
+
+interface Timeline {
+  tick: () => void;
+}
+
+// Drag-to-seek timeline shared by the YouTube and Prime panels. Position is
+// interpolated between context updates; while dragging, the TV previews the
+// spot via throttled scrubs and drawFrame paints an optional preview frame.
+function createTimeline(
+  root: HTMLElement,
+  read: () => { clock: TimelineClock; receivedAt: number } | null,
+  drawFrame: (frameBox: HTMLElement, t: number) => void,
+): Timeline {
+  const scrub = root.querySelector<HTMLInputElement>(".scrub")!;
+  const cur = root.querySelector<HTMLElement>(".t-cur")!;
+  const dur = root.querySelector<HTMLElement>(".t-dur")!;
+  const preview = root.querySelector<HTMLElement>(".preview")!;
+  let scrubbing = false;
+  let holdUntil = 0;
+  let lastSent = 0;
+  let pending = 0;
+
+  const now = (c: TimelineClock, receivedAt: number): number =>
+    Math.min(c.durationSec, c.currentTimeSec + (c.paused ? 0 : (Date.now() - receivedAt) / 1000));
+
+  function tick(): void {
+    const r = read();
+    if (!r || scrubbing || Date.now() < holdUntil) return;
+    const t = now(r.clock, r.receivedAt);
+    scrub.value = String(r.clock.durationSec > 0 ? Math.round((t / r.clock.durationSec) * 1000) : 0);
+    scrub.style.setProperty("--pct", `${Number(scrub.value) / 10}%`);
+    cur.textContent = fmtTime(t);
+    dur.textContent = r.clock.durationSec > 0 ? fmtTime(r.clock.durationSec) : "--:--";
+  }
+
+  function sendScrub(seconds: number): void {
+    window.clearTimeout(pending);
+    const wait = SCRUB_SEND_MS - (Date.now() - lastSent);
+    if (wait <= 0) {
+      lastSent = Date.now();
+      send({ type: "scrub", seconds });
+    } else {
+      pending = window.setTimeout(() => sendScrub(seconds), wait);
+    }
+  }
+
+  scrub.addEventListener("pointerdown", () => { scrubbing = true; });
+  scrub.addEventListener("input", () => {
+    scrubbing = true;
+    scrub.style.setProperty("--pct", `${Number(scrub.value) / 10}%`);
+    const r = read();
+    if (!r || r.clock.durationSec <= 0) return;
+    const t = (Number(scrub.value) / 1000) * r.clock.durationSec;
+    cur.textContent = fmtTime(t);
+    preview.hidden = false;
+    preview.style.left = `clamp(52px, ${Number(scrub.value) / 10}%, calc(100% - 52px))`;
+    preview.querySelector("span")!.textContent = fmtTime(t);
+    drawFrame(preview.querySelector<HTMLElement>(".frame")!, t);
+    sendScrub(Math.round(t));
+  });
+  scrub.addEventListener("change", () => {
+    scrubbing = false;
+    preview.hidden = true;
+    window.clearTimeout(pending);
+    const r = read();
+    if (!r || r.clock.durationSec <= 0) return;
+    // Hold the thumb where it was dropped until the TV reports the new spot.
+    holdUntil = Date.now() + 1500;
+    send({ type: "seekTo", seconds: Math.round((Number(scrub.value) / 1000) * r.clock.durationSec) });
+  });
+  return { tick };
+}
+
+const SCRUB_SEND_MS = 120;
+
+// YouTube preview: storyboard sprite at native size, scaled into the frame.
+const ytTimeline = createTimeline(
+  npBox,
+  () => (latestYt?.nowPlaying ? { clock: latestYt.nowPlaying, receivedAt: npReceivedAt } : null),
+  (frameBox, t) => {
+    const np = latestYt?.nowPlaying;
+    const sb = np?.storyboard;
+    frameBox.hidden = !sb;
+    if (!np || !sb) return;
+    const f = storyboardFrame(sb, t, np.durationSec);
+    const sprite = frameBox.firstElementChild as HTMLElement;
+    // Box height is fixed; width follows the frames (vertical videos too).
+    frameBox.style.aspectRatio = `${sb.width} / ${sb.height}`;
+    sprite.style.width = `${sb.width}px`;
+    sprite.style.height = `${sb.height}px`;
+    sprite.style.backgroundImage = `url("${f.url}")`;
+    sprite.style.backgroundPosition = `-${f.x}px -${f.y}px`;
+    sprite.style.transform = `scale(${frameBox.clientHeight / sb.height})`;
+  },
+);
+
+// Prime has no storyboard on the web: the preview is just the time.
+const pvTimeline = createTimeline(
+  pvNow,
+  () => (latestPv?.nowPlaying ? { clock: latestPv.nowPlaying, receivedAt: pvReceivedAt } : null),
+  (frameBox) => { frameBox.hidden = true; },
+);
+
+function tickTimeline(): void {
+  ytTimeline.tick();
+  pvTimeline.tick();
+}
+window.setInterval(tickTimeline, 250);
 
 npSpeed.addEventListener("change", () => {
   const rate = Number(npSpeed.value);
@@ -412,6 +622,25 @@ searchForm.addEventListener("submit", (e) => {
   if (!text) return;
   send({ type: "search", text });
   closeSearch();
+});
+
+function closePvSearch(): void {
+  pvSearchInput.blur();
+  pvSearchInput.value = "";
+  pvSearchForm.hidden = true;
+}
+
+$("#pv-search-open").addEventListener("click", () => {
+  pvSearchForm.hidden = false;
+  pvSearchInput.focus();
+});
+$("#pv-search-cancel").addEventListener("click", closePvSearch);
+pvSearchForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const text = pvSearchInput.value.trim();
+  if (!text) return;
+  send({ type: "search", text });
+  closePvSearch();
 });
 
 // --- No zoom (iOS ignores user-scalable=no in Safari tabs) ---

@@ -62,10 +62,10 @@
           </div>
         </div>
         <div class="scrub-wrap">
-          <div id="np-preview" class="preview" hidden><div class="frame"><div></div></div><span></span></div>
-          <input id="np-scrub" class="scrub" type="range" min="0" max="1000" step="1" value="0" aria-label="Timeline" />
+          <div class="preview" hidden><div class="frame"><div></div></div><span></span></div>
+          <input class="scrub" type="range" min="0" max="1000" step="1" value="0" aria-label="Timeline" />
         </div>
-        <div class="times"><span id="np-cur">0:00</span><span id="np-dur">0:00</span></div>
+        <div class="times"><span class="t-cur">0:00</span><span class="t-dur">0:00</span></div>
         <div class="transport">
           <button data-cmd='{"type":"seek","seconds":-10}' aria-label="Back 10 seconds">
             <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 3.5v4h4"/><text x="12" y="15.3" text-anchor="middle">10</text></svg>
@@ -127,6 +127,96 @@
       <div id="yt-recent-box" class="recent" hidden>
         <h3>Recent</h3>
         <div id="yt-recent" class="recent-row"></div>
+      </div>
+    </section>
+
+    <section id="pv" class="yt" hidden>
+      <div class="yt-head">
+        <h2><b class="mark pv"></b>Prime Video</h2>
+        <span id="pv-conn" class="pill"></span>
+      </div>
+
+      <div id="pv-results-box" class="results" hidden>
+        <h3 id="pv-results-title">Results</h3>
+        <div id="pv-results" class="results-list"></div>
+      </div>
+
+      <div id="pv-now" class="now" hidden>
+        <div class="np-text">
+          <div id="pv-np-title" class="np-title"></div>
+          <div id="pv-np-episode" class="np-channel"></div>
+        </div>
+        <div class="scrub-wrap">
+          <div class="preview" hidden><div class="frame" hidden><div></div></div><span></span></div>
+          <input class="scrub" type="range" min="0" max="1000" step="1" value="0" aria-label="Timeline" />
+        </div>
+        <div class="times"><span class="t-cur">0:00</span><span id="pv-ad" class="ad-tag" hidden>Ad</span><span class="t-dur">0:00</span></div>
+        <div class="transport">
+          <button data-cmd='{"type":"seek","seconds":-10}' aria-label="Back 10 seconds">
+            <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 3.5v4h4"/><text x="12" y="15.3" text-anchor="middle">10</text></svg>
+          </button>
+          <button id="pv-play" class="play" data-cmd='{"type":"playPause"}' aria-label="Play or pause">
+            <svg class="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>
+            <svg class="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></svg>
+          </button>
+          <button data-cmd='{"type":"seek","seconds":10}' aria-label="Forward 10 seconds">
+            <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 3.5v4h-4"/><text x="12" y="15.3" text-anchor="middle">10</text></svg>
+          </button>
+        </div>
+        <div class="opts">
+          <button id="pv-cc" class="opt" data-cmd='{"type":"captions"}'>CC</button>
+          <button id="pv-skip" class="opt" data-cmd='{"type":"skip"}'>Next ep</button>
+          <label class="opt select">
+            <span id="pv-speed-label">1×</span>
+            <select id="pv-speed" aria-label="Speed">
+              <option value="0.75">0.75×</option>
+              <option value="1">1× Normal</option>
+              <option value="1.25">1.25×</option>
+              <option value="1.5">1.5×</option>
+              <option value="2">2×</option>
+            </select>
+          </label>
+          <button class="opt" data-cmd='{"type":"fullscreen"}' aria-label="Fullscreen">
+            <svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="pv-detail" class="detail" hidden>
+        <div id="pv-d-title" class="np-title"></div>
+        <div id="pv-d-ent" class="d-ent"></div>
+        <button id="pv-d-play" class="d-play" type="button">
+          <svg viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></svg><span></span>
+        </button>
+        <div id="pv-d-seasons" class="chips"></div>
+        <div id="pv-d-episodes" class="results-list"></div>
+      </div>
+
+      <div class="pad">
+        <button class="up" data-cmd='{"type":"navigate","direction":"up"}' data-repeat aria-label="Up"><svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></svg></button>
+        <button class="left" data-cmd='{"type":"navigate","direction":"left"}' data-repeat aria-label="Left"><svg viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></svg></button>
+        <button class="ok" data-cmd='{"type":"select"}'>OK</button>
+        <button class="right" data-cmd='{"type":"navigate","direction":"right"}' data-repeat aria-label="Right"><svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
+        <button class="down" data-cmd='{"type":"navigate","direction":"down"}' data-repeat aria-label="Down"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
+      </div>
+
+      <div class="pad-row">
+        <button data-cmd='{"type":"back"}'>
+          <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>Back
+        </button>
+        <button id="pv-search-open">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>Search
+        </button>
+      </div>
+
+      <form id="pv-search" class="search" hidden>
+        <input id="pv-q" type="search" placeholder="Search Prime Video" autocomplete="off" enterkeyhint="search" />
+        <button type="button" id="pv-search-cancel">Cancel</button>
+      </form>
+
+      <div id="pv-continue-box" class="recent" hidden>
+        <h3>Continue watching</h3>
+        <div id="pv-continue" class="recent-row"></div>
       </div>
     </section>
   </main>

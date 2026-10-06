@@ -17,10 +17,10 @@ the entire PC experience. Samsung LAN control is parked, not a blocker
   fullscreen, GeForce NOW, PowerShell focus/volume, aggressive `home` recovery)
   loads only on Windows via `LAUNCHER=windows`.
 - `pwa/` — minimal Living Room remote (Vite + plain TS): app launch buttons,
-  volume, Home. Talks to `ws://<host>:8080`.
-- `extension/` — Edge MV3 adapters. YouTube ships (`youtube.ts` TV overlay +
-  `background.ts` WS bridge to the service); `content.ts` routes per site,
-  Netflix/Prime plug in next.
+  volume, Home, per-app YouTube/Prime panels. Talks to `ws://<host>:8080`.
+- `extension/` — Edge MV3 adapters. YouTube (`youtube.ts`) and Prime Video
+  (`prime.ts`) TV overlays + `background.ts` WS bridge to the service;
+  `content.ts` routes per site, Netflix plugs in next.
 
 ## Run
 
@@ -63,4 +63,5 @@ The Mac also holds a work `gh` account (`jpc-owner`); switch accounts with
    launch + Home recovery on the real TV; apply the appliance checklist in
    `server/README.md` (no sleep, auto-login, autostart).
 3. Then: Edge extension adapters — YouTube done (overlay, search, timeline/
-   CC/quality, context-aware PWA panel); `netflix.ts`, `prime.ts` next.
+   CC/quality, context-aware PWA panel); Prime done (rows, detail/seasons/
+   episodes, ad-aware timeline, CC, skip); `netflix.ts` next.

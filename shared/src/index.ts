@@ -23,6 +23,10 @@ export type Command =
   | { type: "captions" }
   | { type: "quality"; level: string }
   | { type: "openVideo"; videoId: string }
+  // Prime: open a title's detail page, or start playing it (play: true).
+  | { type: "openTitle"; titleId: string; play: boolean }
+  // Prime: press whatever skip control is up (Skip Intro/Recap, Next Episode).
+  | { type: "skip" }
   | { type: "search"; text: string }
   | { type: "volume"; action: "up" | "down" | "mute" }
   | { type: "ping" };
@@ -32,7 +36,7 @@ export type Command =
 // (browsers refuse requestFullscreen without a user gesture).
 const ADAPTER_COMMAND_TYPES = new Set([
   "navigate", "select", "back", "playPause", "seek", "seekTo", "scrub", "speed", "captions", "quality",
-  "openVideo", "search",
+  "openVideo", "openTitle", "skip", "search",
 ]);
 
 export function isAdapterCommand(command: Command): boolean {
@@ -90,8 +94,69 @@ export interface YoutubeContext {
   results: ResultItem[];
 }
 
-// Union grows as netflix/prime adapters land.
-export type AppContext = YoutubeContext;
+// --- Prime Video ---
+
+export interface PrimeTitle {
+  titleId: string;
+  title: string;
+  // "Movie", "TV Show", a badge like "NEW EPISODE".
+  meta: string;
+  image: string;
+  // false: needs a paid add-on channel (STARZ, Paramount+...).
+  entitled: boolean;
+  // Watch progress 0..100, null when never started.
+  progress: number | null;
+}
+
+export interface PrimeEpisode {
+  titleId: string;
+  title: string;
+  // "53min · Feb 19, 2025" or "41 min left".
+  meta: string;
+  image: string;
+  progress: number | null;
+}
+
+export interface PrimeDetail {
+  titleId: string;
+  title: string;
+  synopsis: string;
+  // "Included with Prime" / "Watch with STARZ".
+  entitlement: string;
+  // "Resume Episode 1", "Play S3 E1", "Play"; "" when not playable.
+  playLabel: string;
+  seasons: { titleId: string; label: string; current: boolean }[];
+  episodes: PrimeEpisode[];
+}
+
+export interface PrimeNowPlaying {
+  title: string;
+  // "S1 E1 Episode name"; "" for movies.
+  episode: string;
+  // Content time: Prime stitches ads into the stream, so these exclude ads.
+  currentTimeSec: number;
+  durationSec: number;
+  paused: boolean;
+  ad: boolean;
+  captions: boolean;
+  rate: number;
+  // Label of an on-screen skip control ("Skip Intro"), "" when none.
+  skip: string;
+}
+
+export interface PrimeContext {
+  app: "prime";
+  screen: "browse" | "search" | "detail" | "watch";
+  query: string;
+  nowPlaying: PrimeNowPlaying | null;
+  // Prime's own Continue Watching row (kept from the last home visit).
+  continueWatching: PrimeTitle[];
+  // Search grid on the search screen; [] elsewhere.
+  results: PrimeTitle[];
+  detail: PrimeDetail | null;
+}
+
+export type AppContext = YoutubeContext | PrimeContext;
 
 export type AdapterMessage =
   | { type: "adapterHello"; app: AppId }
@@ -115,6 +180,9 @@ export type ServerMessage =
   | { type: "error"; message: string };
 
 const APP_IDS: AppId[] = ["netflix", "prime", "youtube", "geforce"];
+
+// Prime/Amazon title ids: "0H1T1C23B07HLZPPHJSSPMYSL7", "B0B8TNQ2KP".
+const TITLE_ID = /^[A-Za-z0-9]{1,64}$/;
 
 export function parseCommand(input: unknown): Command {
   if (typeof input !== "object" || input === null) throw new Error("not an object");
@@ -164,6 +232,13 @@ export function parseCommand(input: unknown): Command {
         return { type: "seek", seconds: c.seconds };
       }
       throw new Error("seek.seconds must be a finite number within ±3600");
+    case "openTitle":
+      if (typeof c.titleId === "string" && TITLE_ID.test(c.titleId)) {
+        return { type: "openTitle", titleId: c.titleId, play: c.play === true };
+      }
+      throw new Error("openTitle.titleId must be 1..64 alphanumerics");
+    case "skip":
+      return { type: "skip" };
     case "openVideo":
       if (typeof c.videoId === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(c.videoId)) {
         return { type: "openVideo", videoId: c.videoId };
@@ -215,7 +290,112 @@ function numOr(input: unknown, fallback: number): number {
 export function parseAppContext(input: unknown): AppContext {
   if (typeof input !== "object" || input === null) throw new Error("context not an object");
   const c = input as Record<string, unknown>;
-  if (c.app !== "youtube") throw new Error(`unsupported context app: ${String(c.app)}`);
+  if (c.app === "youtube") return parseYoutubeContext(c);
+  if (c.app === "prime") return parsePrimeContext(c);
+  throw new Error(`unsupported context app: ${String(c.app)}`);
+}
+
+function str(input: unknown, cap: number): string {
+  return typeof input === "string" ? input.slice(0, cap) : "";
+}
+
+// Remote image urls the phone loads directly: https only.
+function imageUrl(input: unknown): string {
+  return typeof input === "string" && input.startsWith("https://") ? input.slice(0, 2000) : "";
+}
+
+function progressOf(input: unknown): number | null {
+  return typeof input === "number" && Number.isFinite(input) ? Math.min(100, Math.max(0, input)) : null;
+}
+
+function parsePrimeTitle(input: unknown): PrimeTitle | null {
+  if (typeof input !== "object" || input === null) return null;
+  const t = input as Record<string, unknown>;
+  if (typeof t.titleId !== "string" || !TITLE_ID.test(t.titleId)) return null;
+  return {
+    titleId: t.titleId,
+    title: str(t.title, 300),
+    meta: str(t.meta, 80),
+    image: imageUrl(t.image),
+    entitled: t.entitled !== false,
+    progress: progressOf(t.progress),
+  };
+}
+
+function parsePrimeDetail(input: unknown): PrimeDetail | null {
+  if (typeof input !== "object" || input === null) return null;
+  const d = input as Record<string, unknown>;
+  if (typeof d.titleId !== "string" || !TITLE_ID.test(d.titleId)) return null;
+  const seasons = Array.isArray(d.seasons)
+    ? d.seasons
+        .filter((x): x is Record<string, unknown> =>
+          typeof x === "object" && x !== null && typeof x.titleId === "string" && TITLE_ID.test(x.titleId))
+        .map((x) => ({ titleId: x.titleId as string, label: str(x.label, 40), current: x.current === true }))
+        .slice(0, 40)
+    : [];
+  const episodes = Array.isArray(d.episodes)
+    ? d.episodes
+        .map((e): PrimeEpisode | null => {
+          if (typeof e !== "object" || e === null) return null;
+          const x = e as Record<string, unknown>;
+          if (typeof x.titleId !== "string" || !TITLE_ID.test(x.titleId)) return null;
+          return {
+            titleId: x.titleId,
+            title: str(x.title, 300),
+            meta: str(x.meta, 80),
+            image: imageUrl(x.image),
+            progress: progressOf(x.progress),
+          };
+        })
+        .filter((e): e is PrimeEpisode => e !== null)
+        .slice(0, 100)
+    : [];
+  return {
+    titleId: d.titleId,
+    title: str(d.title, 300),
+    synopsis: str(d.synopsis, 1000),
+    entitlement: str(d.entitlement, 120),
+    playLabel: str(d.playLabel, 80),
+    seasons,
+    episodes,
+  };
+}
+
+function parsePrimeContext(c: Record<string, unknown>): PrimeContext {
+  if (c.screen !== "browse" && c.screen !== "search" && c.screen !== "detail" && c.screen !== "watch") {
+    throw new Error("context.screen must be browse|search|detail|watch");
+  }
+  let nowPlaying: PrimeNowPlaying | null = null;
+  if (typeof c.nowPlaying === "object" && c.nowPlaying !== null) {
+    const np = c.nowPlaying as Record<string, unknown>;
+    nowPlaying = {
+      title: str(np.title, 300),
+      episode: str(np.episode, 300),
+      currentTimeSec: Math.max(0, numOr(np.currentTimeSec, 0)),
+      durationSec: Math.max(0, numOr(np.durationSec, 0)),
+      paused: np.paused !== false,
+      ad: np.ad === true,
+      captions: np.captions === true,
+      rate: Math.min(4, Math.max(0.25, numOr(np.rate, 1))),
+      skip: str(np.skip, 40),
+    };
+  }
+  const titles = (input: unknown, cap: number): PrimeTitle[] =>
+    Array.isArray(input)
+      ? input.map(parsePrimeTitle).filter((t): t is PrimeTitle => t !== null).slice(0, cap)
+      : [];
+  return {
+    app: "prime",
+    screen: c.screen,
+    query: str(c.query, 200),
+    nowPlaying,
+    continueWatching: titles(c.continueWatching, 20),
+    results: titles(c.results, 60),
+    detail: parsePrimeDetail(c.detail),
+  };
+}
+
+function parseYoutubeContext(c: Record<string, unknown>): YoutubeContext {
   if (c.screen !== "browse" && c.screen !== "search" && c.screen !== "watch") {
     throw new Error("context.screen must be browse|search|watch");
   }

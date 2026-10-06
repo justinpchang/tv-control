@@ -222,6 +222,50 @@ try {
     adapter.send(JSON.stringify({ type: "adapterPing" }));
     check("adapterPing accepted", !(await pingErr));
 
+    // Prime adapter: commands relay, context is sanitized on the way through.
+    const prime = await wsConnect(ADAPTER_PORT);
+    try {
+      prime.send(JSON.stringify({ type: "adapterHello", app: "prime" }));
+      await json(`http://localhost:${ADAPTER_PORT}/api/command`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "launch", app: "prime" }),
+      });
+      for (const cmd of [{ type: "openTitle", titleId: "0H1T1C23B07HLZPPHJSSPMYSL7", play: true }, { type: "skip" }]) {
+        const seen = wsNext(prime, (m) => m.type === cmd.type);
+        phone.send(JSON.stringify(cmd));
+        check(`prime ${cmd.type} relayed`, JSON.stringify(await seen) === JSON.stringify(cmd));
+      }
+      const badTitle = await json(`http://localhost:${ADAPTER_PORT}/api/command`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "openTitle", titleId: "../evil" }),
+      });
+      check("bad openTitle rejected", badTitle.status === 400);
+
+      const pvSeen = wsNext(phone, (m) => m.type === "context" && m.context?.app === "prime");
+      prime.send(JSON.stringify({
+        type: "adapterContext",
+        context: {
+          app: "prime", screen: "watch", query: "",
+          nowPlaying: { title: "Reacher", episode: "S3 E2", currentTimeSec: 20, durationSec: 2580, paused: false, ad: false, captions: true, rate: 1, skip: "" },
+          continueWatching: [
+            { titleId: "0H1T1C23B07HLZPPHJSSPMYSL7", title: "Reacher", meta: "TV Show", image: "javascript:alert(1)", entitled: true, progress: 140 },
+            { titleId: "not valid!" },
+          ],
+          results: [],
+          detail: { titleId: "0H1T1C23B07HLZPPHJSSPMYSL7", title: "Reacher", synopsis: "", entitlement: "", playLabel: "Play",
+            seasons: [{ titleId: "0RTZ57DQ6PBHH29UN5JS7U7CW4", label: "Season 1", current: false }], episodes: [] },
+        },
+      }));
+      const pv = (await pvSeen).context;
+      check("prime context broadcast", pv.screen === "watch" && pv.nowPlaying?.durationSec === 2580);
+      check("prime titles sanitized", pv.continueWatching.length === 1
+        && pv.continueWatching[0].image === "" && pv.continueWatching[0].progress === 100);
+    } finally {
+      prime.close();
+    }
+
     const bogusAdapter = wsNext(adapter, (m) => m.type === "error");
     adapter.send(JSON.stringify({ type: "adapterContext", context: { app: "vimeo" } }));
     check("bad adapter context errors", (await bogusAdapter).type === "error");
