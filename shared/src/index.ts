@@ -17,6 +17,9 @@ export type Command =
   | { type: "fullscreen" }
   | { type: "seek"; seconds: number }
   | { type: "seekTo"; seconds: number }
+  // Live timeline drag: TV shows a preview frame, no seek until seekTo.
+  | { type: "scrub"; seconds: number }
+  | { type: "speed"; rate: number }
   | { type: "captions" }
   | { type: "quality"; level: string }
   | { type: "openVideo"; videoId: string }
@@ -28,7 +31,8 @@ export type Command =
 // volume/ping stay server-side, as does fullscreen: it needs a real keypress
 // (browsers refuse requestFullscreen without a user gesture).
 const ADAPTER_COMMAND_TYPES = new Set([
-  "navigate", "select", "back", "playPause", "seek", "seekTo", "captions", "quality", "openVideo", "search",
+  "navigate", "select", "back", "playPause", "seek", "seekTo", "scrub", "speed", "captions", "quality",
+  "openVideo", "search",
 ]);
 
 export function isAdapterCommand(command: Command): boolean {
@@ -44,6 +48,24 @@ export interface VideoItem {
   thumbnail: string;
 }
 
+export interface ResultItem extends VideoItem {
+  duration: string;
+  // "1.2M views · 3 days ago"
+  meta: string;
+}
+
+// One storyboard level: sprite sheets of evenly spaced frames. Sheet n is
+// urlTemplate with "$M" replaced by n. intervalMs 0 = spread over duration.
+export interface Storyboard {
+  urlTemplate: string;
+  width: number;
+  height: number;
+  count: number;
+  columns: number;
+  rows: number;
+  intervalMs: number;
+}
+
 export interface NowPlaying extends VideoItem {
   currentTimeSec: number;
   durationSec: number;
@@ -53,6 +75,8 @@ export interface NowPlaying extends VideoItem {
   // YouTube quality ids ("auto", "hd1080", "large", ...); [] until known.
   quality: string;
   qualities: string[];
+  rate: number;
+  storyboard: Storyboard | null;
 }
 
 export interface YoutubeContext {
@@ -62,6 +86,8 @@ export interface YoutubeContext {
   nowPlaying: NowPlaying | null;
   // Recently watched, newest first (kept by the extension, capped at 12).
   recent: VideoItem[];
+  // What the TV grid shows on the search screen; [] elsewhere.
+  results: ResultItem[];
 }
 
 // Union grows as netflix/prime adapters land.
@@ -123,6 +149,16 @@ export function parseCommand(input: unknown): Command {
         return { type: "quality", level: c.level };
       }
       throw new Error("quality.level must be a YouTube quality id");
+    case "scrub":
+      if (typeof c.seconds === "number" && Number.isFinite(c.seconds) && c.seconds >= 0 && c.seconds <= 86400) {
+        return { type: "scrub", seconds: c.seconds };
+      }
+      throw new Error("scrub.seconds must be within 0..86400");
+    case "speed":
+      if (typeof c.rate === "number" && Number.isFinite(c.rate) && c.rate >= 0.25 && c.rate <= 4) {
+        return { type: "speed", rate: c.rate };
+      }
+      throw new Error("speed.rate must be within 0.25..4");
     case "seek":
       if (typeof c.seconds === "number" && Number.isFinite(c.seconds) && Math.abs(c.seconds) <= 3600) {
         return { type: "seek", seconds: c.seconds };
@@ -160,6 +196,18 @@ function parseVideoItem(input: unknown): VideoItem | null {
   };
 }
 
+function parseStoryboard(input: unknown): Storyboard | null {
+  if (typeof input !== "object" || input === null) return null;
+  const s = input as Record<string, unknown>;
+  // Only YouTube's image CDN: the phone loads this URL directly.
+  if (typeof s.urlTemplate !== "string" || !s.urlTemplate.startsWith("https://i.ytimg.com/")) return null;
+  const ints = ["width", "height", "count", "columns", "rows", "intervalMs"].map((k) => s[k]);
+  if (!ints.every((n) => typeof n === "number" && Number.isInteger(n) && n >= 0 && n <= 1e7)) return null;
+  const [width, height, count, columns, rows, intervalMs] = ints as number[];
+  if (!width || !height || !count || !columns || !rows) return null;
+  return { urlTemplate: s.urlTemplate.slice(0, 2000), width, height, count, columns, rows, intervalMs };
+}
+
 function numOr(input: unknown, fallback: number): number {
   return typeof input === "number" && Number.isFinite(input) ? input : fallback;
 }
@@ -186,6 +234,8 @@ export function parseAppContext(input: unknown): AppContext {
         qualities: Array.isArray(np.qualities)
           ? np.qualities.filter((q): q is string => typeof q === "string" && /^[a-z0-9]{1,16}$/.test(q)).slice(0, 16)
           : [],
+        rate: Math.min(4, Math.max(0.25, numOr(np.rate, 1))),
+        storyboard: parseStoryboard(np.storyboard),
       };
     }
   }
@@ -196,6 +246,21 @@ export function parseAppContext(input: unknown): AppContext {
     nowPlaying,
     recent: Array.isArray(c.recent)
       ? c.recent.map(parseVideoItem).filter((v): v is VideoItem => v !== null).slice(0, 12)
+      : [],
+    results: Array.isArray(c.results)
+      ? c.results
+          .map((r): ResultItem | null => {
+            const item = parseVideoItem(r);
+            if (!item) return null;
+            const x = r as Record<string, unknown>;
+            return {
+              ...item,
+              duration: typeof x.duration === "string" ? x.duration.slice(0, 20) : "",
+              meta: typeof x.meta === "string" ? x.meta.slice(0, 80) : "",
+            };
+          })
+          .filter((r): r is ResultItem => r !== null)
+          .slice(0, 40)
       : [],
   };
 }
@@ -216,4 +281,19 @@ export function parseAdapterMessage(input: unknown): AdapterMessage {
     default:
       throw new Error(`unknown adapter message: ${String(m.type)}`);
   }
+}
+
+// Sprite-sheet frame for a moment in the video (phone and TV previews).
+export function storyboardFrame(
+  sb: Storyboard, timeSec: number, durationSec: number,
+): { url: string; x: number; y: number } {
+  const step = sb.intervalMs > 0 ? sb.intervalMs / 1000 : durationSec / sb.count;
+  const index = Math.max(0, Math.min(sb.count - 1, step > 0 ? Math.floor(timeSec / step) : 0));
+  const perSheet = sb.columns * sb.rows;
+  const cell = index % perSheet;
+  return {
+    url: sb.urlTemplate.replace("$M", String(Math.floor(index / perSheet))),
+    x: (cell % sb.columns) * sb.width,
+    y: Math.floor(cell / sb.columns) * sb.height,
+  };
 }

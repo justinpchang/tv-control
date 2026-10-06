@@ -194,7 +194,10 @@ try {
     await fsAck;
     check("fullscreen handled server-side", !(await fsLeak));
 
-    for (const cmd of [{ type: "seekTo", seconds: 42 }, { type: "captions" }, { type: "quality", level: "hd1080" }]) {
+    for (const cmd of [
+      { type: "seekTo", seconds: 42 }, { type: "captions" }, { type: "quality", level: "hd1080" },
+      { type: "speed", rate: 1.5 }, { type: "scrub", seconds: 90 },
+    ]) {
       const seen = wsNext(adapter, (m) => m.type === cmd.type);
       phone.send(JSON.stringify(cmd));
       check(`${cmd.type} relayed to adapter`, JSON.stringify(await seen) === JSON.stringify(cmd));
@@ -206,6 +209,13 @@ try {
       body: JSON.stringify({ type: "quality", level: "'; rm -rf" }),
     });
     check("bad quality rejected", badQuality.status === 400);
+
+    const badSpeed = await json(`http://localhost:${ADAPTER_PORT}/api/command`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "speed", rate: 16 }),
+    });
+    check("bad speed rejected", badSpeed.status === 400);
 
     // Keepalive pings are accepted silently (no error back).
     const pingErr = wsNext(adapter, (m) => m.type === "error", 500).then(() => true, () => false);

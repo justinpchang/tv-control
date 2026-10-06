@@ -64,6 +64,21 @@ html { background: #0f0f0f; }
 .tvyt-mini-sub { font-size: .8vw; color: #aaa; margin-top: .15vw; }
 .tvyt-mini-track { height: .3vw; background: #3d3d3d; border-radius: .15vw; margin-top: .5vw; }
 .tvyt-mini-fill { height: 100%; background: #ff0033; border-radius: .15vw; width: 0%; }
+.tvyt-mini-track { position: relative; }
+.tvyt-mini-preview {
+  position: absolute; bottom: 1vw; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: .3vw;
+}
+.tvyt-mini-preview[hidden], .tvyt-mini-frame[hidden] { display: none; }
+.tvyt-mini-frame {
+  height: 6.75vw; aspect-ratio: 16 / 9; overflow: hidden; border-radius: .4vw;
+  border: .15vw solid #f1f1f1; background: #000;
+}
+.tvyt-mini-frame > div { transform-origin: 0 0; background-repeat: no-repeat; }
+.tvyt-mini-preview span {
+  font-size: .9vw; font-weight: 600; background: rgba(0,0,0,.8);
+  padding: .1vw .5vw; border-radius: .3vw; font-variant-numeric: tabular-nums;
+}
 .tvyt-mini-hints { font-size: .7vw; color: #717171; margin-top: .4vw; }
 @media (prefers-reduced-motion: reduce) {
   #tvyt-toast { transition: none; }

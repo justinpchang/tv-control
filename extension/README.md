@@ -8,12 +8,15 @@ ships first; Netflix/Prime plug into `content.ts` when they land.
 - `src/youtube.ts` (content script, `document_start`) — scrapes YouTube's
   own rendered DOM (lockups plus legacy search-result renderers) and renders
   a 10-foot TV overlay sized in `vw`: 4-column full-width grid, mini player
-  bar on watch pages. Handles `navigate/select/back/playPause/seek/seekTo/
-  captions/quality/openVideo/search`. Sends `tvHello` every 20s as a
+  bar on watch pages (with a storyboard preview while the phone scrubs).
+  Handles `navigate/select/back/playPause/seek/seekTo/scrub/speed/captions/
+  quality/openVideo/search`; on the search screen it reports the grid as
+  `results` for the phone. Back from a video returns to where it was opened. Sends `tvHello` every 20s as a
   heartbeat. Keeps a 12-item recently-watched list in `chrome.storage.local`
   (`tvyt.history`; recorded after 10s of non-ad playback).
-- `src/ytMain.ts` (MAIN world) — reads/sets quality through YouTube's player
-  API (`#movie_player`), which the isolated content script can't reach.
+- `src/ytMain.ts` (MAIN world) — quality, speed and the storyboard spec via
+  YouTube's player API (`#movie_player`), which the isolated content script
+  can't reach.
 - `src/background.ts` (service worker) — holds the WebSocket to the control
   service (`ws://127.0.0.1:8080`), registers each adapter tab (`adapterHello`),
   forwards adapter context, relays commands to tabs. Tab heartbeats keep the
@@ -51,5 +54,7 @@ sync — rebuild shared first after protocol changes.
 ## Phone flow (PWA)
 
 The YouTube panel shows only while YouTube is the active app: now playing
-with a draggable timeline, ±10s, play/pause, CC, quality, fullscreen, then
-D-pad + OK, Back, Search, and a swipeable Recent row.
+with a draggable timeline (frame preview on phone and TV), ±10s, play/pause,
+CC, quality, speed, fullscreen, then D-pad + OK, Back, Search, and a
+swipeable Recent row. After a search the results list on the phone is
+tappable.

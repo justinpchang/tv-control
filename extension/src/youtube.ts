@@ -1,6 +1,13 @@
-import type { Command, NowPlaying, VideoItem, YoutubeContext } from "@tv-control/shared";
+import {
+  storyboardFrame,
+  type Command,
+  type NowPlaying,
+  type Storyboard,
+  type VideoItem,
+  type YoutubeContext,
+} from "@tv-control/shared";
 import { OVERLAY_CSS } from "./overlayStyles.js";
-import { formatTime, moveFocus, screenForPath, videoIdFromHref, watchUrl } from "./ytLib.js";
+import { formatTime, moveFocus, parseStoryboardSpec, screenForPath, videoIdFromHref, watchUrl } from "./ytLib.js";
 
 // YouTube site adapter: a readable 10-foot overlay (grid + mini player bar)
 // driven by phone commands relayed through the background service worker.
@@ -24,6 +31,9 @@ interface AdapterState {
   quality: string;
   recent: VideoItem[];
   lastRecorded: string;
+  storyboard: Storyboard | null;
+  // Phone timeline drag in progress: preview this second on the mini bar.
+  scrubSec: number | null;
   lastReport: string;
 }
 
@@ -38,6 +48,8 @@ const state: AdapterState = {
   quality: "",
   recent: [],
   lastRecorded: "",
+  storyboard: null,
+  scrubSec: null,
   lastReport: "",
 };
 
@@ -63,6 +75,10 @@ function reportContext(force = false): void {
     query: state.query,
     nowPlaying,
     recent: state.recent,
+    results: state.screen === "search"
+      ? state.items.slice(0, 40).map(({ videoId, title, channel, thumbnail, duration, meta }) =>
+        ({ videoId, title, channel, thumbnail, duration, meta }))
+      : [],
   };
   // Round playback time so timeupdate doesn't spam the socket every frame.
   const key = JSON.stringify({ ...context, nowPlaying: nowPlaying && { ...nowPlaying, currentTimeSec: Math.floor(nowPlaying.currentTimeSec) } });
@@ -170,6 +186,9 @@ function lockupMeta(el: Element): string {
     const views = /([\d.,]+\s*[KMB]?\s*views?)\b/i.exec(text)?.[1];
     const age = /(\d[\d,]*\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i.exec(text)?.[1];
     if (views || age) return [views, age].filter(Boolean).join(" · ");
+    // Compact search-result form: "49M 2y ago".
+    const compact = /([\d.,]+\s*[KMB]?)\s+(\d+\s*(?:mo|[smhdwy])\s+ago)/.exec(text);
+    if (compact) return `${compact[1]} views · ${compact[2]}`;
   }
   return "";
 }
@@ -245,6 +264,9 @@ function readNowPlaying(): NowPlaying | null {
     captions: readCaptions(),
     quality: state.quality,
     qualities: state.qualities,
+    rate: v ? v.playbackRate : 1,
+    // Spec urls embed the video id; drop a stale one from the last video.
+    storyboard: state.storyboard?.urlTemplate.includes(`/${videoId}/`) ? state.storyboard : null,
   };
 }
 
@@ -282,19 +304,24 @@ function maybeRecordRecent(): void {
   reportContext(true);
 }
 
-// --- Quality via the MAIN-world bridge (ytMain.ts) ---
+// --- Player API via the MAIN-world bridge (ytMain.ts) ---
 
-function requestQuality(set?: string): void {
-  document.dispatchEvent(new CustomEvent("tvyt:qualityReq", { detail: JSON.stringify(set ? { set } : {}) }));
+function requestPlayer(req: { set?: string; rate?: number } = {}): void {
+  document.dispatchEvent(new CustomEvent("tvyt:playerReq", { detail: JSON.stringify(req) }));
 }
 
-function onQualityInfo(e: Event): void {
+function onPlayerInfo(e: Event): void {
   try {
-    const info = JSON.parse(String((e as CustomEvent).detail)) as { levels?: unknown; preferred?: unknown };
+    const info = JSON.parse(String((e as CustomEvent).detail)) as {
+      levels?: unknown; preferred?: unknown; storyboardSpec?: unknown;
+    };
     state.qualities = Array.isArray(info.levels)
       ? info.levels.filter((l): l is string => typeof l === "string")
       : [];
     state.quality = typeof info.preferred === "string" ? info.preferred : "";
+    state.storyboard = typeof info.storyboardSpec === "string" && info.storyboardSpec
+      ? parseStoryboardSpec(info.storyboardSpec)
+      : null;
     reportContext();
   } catch {
     /* ignore */
@@ -353,7 +380,10 @@ function ensureOverlay(): void {
   miniEl.innerHTML = `
     <div class="tvyt-mini-title"></div>
     <div class="tvyt-mini-sub"></div>
-    <div class="tvyt-mini-track"><div class="tvyt-mini-fill"></div></div>
+    <div class="tvyt-mini-track">
+      <div class="tvyt-mini-fill"></div>
+      <div class="tvyt-mini-preview" hidden><div class="tvyt-mini-frame"><div></div></div><span></span></div>
+    </div>
     <div class="tvyt-mini-hints">◀ ▶ seek 10s · ▲ / OK related videos</div>`;
   document.body.appendChild(miniEl);
   miniTitleEl = miniEl.querySelector(".tvyt-mini-title");
@@ -445,8 +475,46 @@ function renderMini(): void {
   if (!np) return;
   miniTitleEl.textContent = np.title;
   const time = np.durationSec > 0 ? `${formatTime(np.currentTimeSec)} / ${formatTime(np.durationSec)}` : "";
-  miniSubEl.textContent = [np.channel, np.paused ? "Paused" : "Playing", time].filter(Boolean).join(" · ");
+  const rate = np.rate !== 1 ? `${np.rate}×` : "";
+  miniSubEl.textContent = [np.channel, np.paused ? "Paused" : "Playing", time, rate].filter(Boolean).join(" · ");
   miniFillEl.style.width = np.durationSec > 0 ? `${(np.currentTimeSec / np.durationSec) * 100}%` : "0%";
+  renderScrubPreview(np);
+}
+
+// Frame + time floating over the track at the phone's drag position. The
+// inner div is the sprite at native size, scaled to the frame box.
+function renderScrubPreview(np: NowPlaying): void {
+  const box = miniEl?.querySelector<HTMLElement>(".tvyt-mini-preview");
+  if (!box) return;
+  const t = state.scrubSec;
+  box.hidden = t === null || np.durationSec <= 0;
+  if (t === null || np.durationSec <= 0) return;
+  const pct = Math.min(100, Math.max(0, (t / np.durationSec) * 100));
+  box.style.left = `clamp(6vw, ${pct}%, calc(100% - 6vw))`;
+  box.querySelector("span")!.textContent = formatTime(t);
+  const frameBox = box.querySelector<HTMLElement>(".tvyt-mini-frame")!;
+  const sprite = frameBox.firstElementChild as HTMLElement;
+  frameBox.hidden = !np.storyboard;
+  if (!np.storyboard) return;
+  const sb = np.storyboard;
+  const f = storyboardFrame(sb, t, np.durationSec);
+  // Box height is fixed; width follows the frames (vertical videos too).
+  frameBox.style.aspectRatio = `${sb.width} / ${sb.height}`;
+  sprite.style.width = `${sb.width}px`;
+  sprite.style.height = `${sb.height}px`;
+  sprite.style.backgroundImage = `url("${f.url}")`;
+  sprite.style.backgroundPosition = `-${f.x}px -${f.y}px`;
+  sprite.style.transform = `scale(${frameBox.clientHeight / sb.height})`;
+}
+
+let scrubTimer = 0;
+
+function scrubPreview(seconds: number | null): void {
+  state.scrubSec = seconds;
+  window.clearTimeout(scrubTimer);
+  // A dropped connection mid-drag must not leave the preview up.
+  if (seconds !== null) scrubTimer = window.setTimeout(() => scrubPreview(null), 2000);
+  renderMini();
 }
 
 function updateFocus(): void {
@@ -514,7 +582,7 @@ function onFullscreenKey(e: KeyboardEvent): void {
 }
 
 function setQuality(level: string): void {
-  requestQuality(level);
+  requestPlayer({ set: level });
   toast(level === "auto" ? "Quality: Auto" : `Quality: ${level}`);
 }
 
@@ -563,6 +631,9 @@ export function handleCommand(command: Command): void {
       if (state.screen === "watch" && state.expanded) {
         state.expanded = false;
         renderAll();
+      } else if (state.screen === "watch" && history.length > 1) {
+        // Back to wherever the video was opened from (search results, home).
+        history.back();
       } else if (state.screen === "watch" || state.screen === "search") {
         location.href = "https://www.youtube.com/";
       } else {
@@ -578,7 +649,15 @@ export function handleCommand(command: Command): void {
       break;
     }
     case "seekTo":
+      scrubPreview(null);
       seekTo(command.seconds);
+      break;
+    case "scrub":
+      scrubPreview(command.seconds);
+      break;
+    case "speed":
+      requestPlayer({ rate: command.rate });
+      toast(`Speed ${command.rate}×`);
       break;
     case "captions":
       toggleCaptions();
@@ -675,9 +754,10 @@ function bindVideo(): void {
     reportContext();
   });
   // New video loaded or the stream's resolution changed: re-read qualities.
-  v.addEventListener("loadedmetadata", () => requestQuality());
-  v.addEventListener("resize", () => requestQuality());
-  requestQuality();
+  v.addEventListener("loadedmetadata", () => requestPlayer());
+  v.addEventListener("resize", () => requestPlayer());
+  v.addEventListener("ratechange", () => { renderMini(); reportContext(); });
+  requestPlayer();
 }
 
 // --- Boot (document_start: body may not exist yet) ---
@@ -688,7 +768,7 @@ export function startYoutubeAdapter(): void {
   ensureStyle();
   loadRecent();
   window.addEventListener("keydown", onFullscreenKey, true);
-  document.addEventListener("tvyt:quality", onQualityInfo);
+  document.addEventListener("tvyt:player", onPlayerInfo);
   document.addEventListener("fullscreenchange", rehostOverlay);
   postToBackground({ kind: "tvHello", app: "youtube" });
   // Keeps the background worker (and its socket) alive and re-registers

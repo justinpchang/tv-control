@@ -2,7 +2,15 @@
 // appears only while YouTube is the active app. The panel renders the adapter
 // context pushed by the server (now playing, captions, quality).
 
-import type { AppContext, Command, NowPlaying, ServerMessage, ServerState, YoutubeContext } from "@tv-control/shared";
+import {
+  storyboardFrame,
+  type AppContext,
+  type Command,
+  type NowPlaying,
+  type ServerMessage,
+  type ServerState,
+  type YoutubeContext,
+} from "@tv-control/shared";
 
 const $ = <T extends HTMLElement>(sel: string): T => document.querySelector<T>(sel)!;
 
@@ -22,6 +30,12 @@ const npPlay = $("#np-play");
 const npCc = $<HTMLButtonElement>("#np-cc");
 const npQuality = $<HTMLSelectElement>("#np-quality");
 const npQualityLabel = $("#np-quality-label");
+const npSpeed = $<HTMLSelectElement>("#np-speed");
+const npSpeedLabel = $("#np-speed-label");
+const npPreview = $("#np-preview");
+const resultsBox = $("#yt-results-box");
+const resultsTitle = $("#yt-results-title");
+const resultsList = $("#yt-results");
 const recentBox = $("#yt-recent-box");
 const recentRow = $("#yt-recent");
 const searchForm = $<HTMLFormElement>("#yt-search");
@@ -133,6 +147,51 @@ function render(): void {
   ytConn.hidden = live;
   renderNowPlaying(latestYt?.nowPlaying ?? null);
   renderRecent();
+  renderResults();
+}
+
+// Search results mirrored from the TV grid; tap one to play it there.
+let resultsSig = "";
+
+function renderResults(): void {
+  const yt = latestYt;
+  const items = yt?.screen === "search" ? yt.results : [];
+  resultsBox.hidden = items.length === 0;
+  resultsTitle.textContent = yt?.query ? `Results for “${yt.query}”` : "Results";
+  const sig = items.map((r) => r.videoId).join(",");
+  if (sig === resultsSig) return;
+  resultsSig = sig;
+  resultsList.innerHTML = "";
+  resultsList.scrollTop = 0;
+  for (const item of items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "res";
+    const thumb = document.createElement("div");
+    thumb.className = "res-thumb";
+    const img = document.createElement("img");
+    img.alt = "";
+    img.loading = "lazy";
+    img.src = item.thumbnail;
+    thumb.appendChild(img);
+    if (item.duration) {
+      const dur = document.createElement("b");
+      dur.textContent = item.duration;
+      thumb.appendChild(dur);
+    }
+    const text = document.createElement("div");
+    text.className = "res-text";
+    const title = document.createElement("span");
+    title.className = "res-title";
+    title.textContent = item.title;
+    const sub = document.createElement("span");
+    sub.className = "res-sub";
+    sub.textContent = [item.channel, item.meta].filter(Boolean).join(" · ");
+    text.append(title, sub);
+    btn.append(thumb, text);
+    btn.addEventListener("click", () => send({ type: "openVideo", videoId: item.videoId }));
+    resultsList.appendChild(btn);
+  }
 }
 
 // Horizontal strip of recently watched videos; tap to play on the TV. The
@@ -198,6 +257,8 @@ function renderNowPlaying(np: NowPlaying | null): void {
   npQuality.disabled = levels.length === 0;
   npQuality.value = np.quality;
   npQualityLabel.textContent = levels.length === 0 ? "Quality" : QUALITY_LABELS[np.quality] ?? (np.quality || "Quality");
+  npSpeed.value = String(np.rate);
+  npSpeedLabel.textContent = `${np.rate}×`;
   tickTimeline();
 }
 
@@ -222,20 +283,68 @@ function tickTimeline(): void {
 }
 window.setInterval(tickTimeline, 250);
 
+// Preview frame over the thumb while dragging (storyboard sprite at native
+// size, scaled into the frame box), mirrored to the TV via throttled scrubs.
+const SCRUB_SEND_MS = 120;
+let lastScrubSent = 0;
+let pendingScrub = 0;
+
+function showPreview(np: NowPlaying, t: number): void {
+  const pct = Number(npScrub.value) / 10;
+  npPreview.hidden = false;
+  npPreview.style.left = `clamp(52px, ${pct}%, calc(100% - 52px))`;
+  npPreview.querySelector("span")!.textContent = fmtTime(t);
+  const frameBox = npPreview.querySelector<HTMLElement>(".frame")!;
+  const sprite = frameBox.firstElementChild as HTMLElement;
+  const sb = np.storyboard;
+  frameBox.hidden = !sb;
+  if (!sb) return;
+  const f = storyboardFrame(sb, t, np.durationSec);
+  // Box height is fixed; width follows the frames (vertical videos too).
+  frameBox.style.aspectRatio = `${sb.width} / ${sb.height}`;
+  sprite.style.width = `${sb.width}px`;
+  sprite.style.height = `${sb.height}px`;
+  sprite.style.backgroundImage = `url("${f.url}")`;
+  sprite.style.backgroundPosition = `-${f.x}px -${f.y}px`;
+  sprite.style.transform = `scale(${frameBox.clientHeight / sb.height})`;
+}
+
+function sendScrub(seconds: number): void {
+  window.clearTimeout(pendingScrub);
+  const wait = SCRUB_SEND_MS - (Date.now() - lastScrubSent);
+  if (wait <= 0) {
+    lastScrubSent = Date.now();
+    send({ type: "scrub", seconds });
+  } else {
+    pendingScrub = window.setTimeout(() => sendScrub(seconds), wait);
+  }
+}
+
 npScrub.addEventListener("pointerdown", () => { scrubbing = true; });
 npScrub.addEventListener("input", () => {
   scrubbing = true;
   const np = latestYt?.nowPlaying;
   npScrub.style.setProperty("--pct", `${Number(npScrub.value) / 10}%`);
-  if (np) npCur.textContent = fmtTime((Number(npScrub.value) / 1000) * np.durationSec);
+  if (!np || np.durationSec <= 0) return;
+  const t = (Number(npScrub.value) / 1000) * np.durationSec;
+  npCur.textContent = fmtTime(t);
+  showPreview(np, t);
+  sendScrub(Math.round(t));
 });
 npScrub.addEventListener("change", () => {
   scrubbing = false;
+  npPreview.hidden = true;
+  window.clearTimeout(pendingScrub);
   const np = latestYt?.nowPlaying;
   if (!np || np.durationSec <= 0) return;
   // Hold the thumb where it was dropped until the TV reports the new spot.
   scrubHoldUntil = Date.now() + 1500;
   send({ type: "seekTo", seconds: Math.round((Number(npScrub.value) / 1000) * np.durationSec) });
+});
+
+npSpeed.addEventListener("change", () => {
+  const rate = Number(npSpeed.value);
+  if (rate > 0) send({ type: "speed", rate });
 });
 
 npQuality.addEventListener("change", () => {

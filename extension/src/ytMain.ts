@@ -5,9 +5,12 @@
 
 interface YtPlayer {
   getAvailableQualityLevels?: () => string[];
-  getPlaybackQuality?: () => string;
   getPreferredQuality?: () => string;
   setPlaybackQualityRange?: (min: string, max?: string) => void;
+  setPlaybackRate?: (rate: number) => void;
+  getPlayerResponse?: () => {
+    storyboards?: { playerStoryboardSpecRenderer?: { spec?: string } };
+  } | null;
 }
 
 function player(): YtPlayer | null {
@@ -16,18 +19,34 @@ function player(): YtPlayer | null {
 
 function report(): void {
   const p = player();
+  let spec = "";
+  try {
+    spec = p?.getPlayerResponse?.()?.storyboards?.playerStoryboardSpecRenderer?.spec ?? "";
+  } catch {
+    /* response not ready */
+  }
   const info = {
     levels: p?.getAvailableQualityLevels?.() ?? [],
     preferred: p?.getPreferredQuality?.() ?? "auto",
+    storyboardSpec: spec,
   };
-  document.dispatchEvent(new CustomEvent("tvyt:quality", { detail: JSON.stringify(info) }));
+  document.dispatchEvent(new CustomEvent("tvyt:player", { detail: JSON.stringify(info) }));
 }
 
-document.addEventListener("tvyt:qualityReq", (e) => {
+document.addEventListener("tvyt:playerReq", (e) => {
   try {
-    const req = JSON.parse(String((e as CustomEvent).detail ?? "{}")) as { set?: string };
+    const req = JSON.parse(String((e as CustomEvent).detail ?? "{}")) as { set?: string; rate?: number };
     const p = player();
     if (req.set && p?.setPlaybackQualityRange) p.setPlaybackQualityRange(req.set, req.set);
+    // Player API keeps YouTube's own speed menu in sync; video.playbackRate
+    // is the fallback.
+    if (typeof req.rate === "number") {
+      if (p?.setPlaybackRate) p.setPlaybackRate(req.rate);
+      else {
+        const v = document.querySelector("video");
+        if (v) v.playbackRate = req.rate;
+      }
+    }
   } catch {
     /* player mid-load */
   }

@@ -44,3 +44,25 @@ export function screenForPath(pathname: string, search: string): "browse" | "sea
   if (pathname.startsWith("/results") && search.includes("search_query")) return "search";
   return "browse";
 }
+
+// YouTube storyboard spec: "<base with $L,$N>|w#h#count#cols#rows#intervalMs#name#sigh|..."
+// Level i (0-based after the base) substitutes $L=i and $N=name; "$M" in the
+// name stays as the sheet-index placeholder. Picks the largest level.
+export function parseStoryboardSpec(spec: string): {
+  urlTemplate: string; width: number; height: number; count: number;
+  columns: number; rows: number; intervalMs: number;
+} | null {
+  const [base, ...levels] = spec.split("|");
+  if (!base?.startsWith("https://i.ytimg.com/") || levels.length === 0) return null;
+  const i = levels.length - 1;
+  const parts = levels[i].split("#");
+  if (parts.length < 8) return null;
+  const [width, height, count, columns, rows, intervalMs] = parts.slice(0, 6).map(Number);
+  const [name, sigh] = [parts[6], parts[7]];
+  if (![width, height, count, columns, rows, intervalMs].every((n) => Number.isInteger(n) && n >= 0)) return null;
+  const url = base.replace("$L", String(i)).replace("$N", name);
+  return {
+    urlTemplate: `${url}${url.includes("?") ? "&" : "?"}sigh=${encodeURIComponent(sigh)}`,
+    width, height, count, columns, rows, intervalMs,
+  };
+}
