@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.local
+.env
+.tv-token
+.DS_Store

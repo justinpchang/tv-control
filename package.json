@@ -1,0 +1,14 @@
+{
+  "name": "tv-control",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phone-controlled TV streaming box: Windows service + PWA + Edge extension",
+  "workspaces": ["shared", "server"],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "build:shared": "npm run build -w @tv-control/shared",
+    "build:server": "npm run build -w @tv-control/server",
+    "dev:server": "npm run dev -w @tv-control/server",
+    "start:server": "npm run start -w @tv-control/server"
+  }
+}

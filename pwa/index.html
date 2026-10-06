@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#101318" />
+  <title>Living Room</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <main class="remote">
+    <h1>Living Room</h1>
+    <p id="status" class="status">connecting…</p>
+
+    <section class="group">
+      <button data-cmd='{"type":"launch","app":"geforce"}'>GeForce NOW</button>
+      <button data-cmd='{"type":"launch","app":"netflix"}'>Netflix</button>
+      <button data-cmd='{"type":"launch","app":"prime"}'>Prime Video</button>
+      <button data-cmd='{"type":"launch","app":"youtube"}'>YouTube</button>
+    </section>
+
+    <section class="group vol">
+      <button data-cmd='{"type":"volume","action":"down"}'>Volume −</button>
+      <button data-cmd='{"type":"volume","action":"mute"}'>Mute</button>
+      <button data-cmd='{"type":"volume","action":"up"}'>Volume +</button>
+    </section>
+
+    <section class="group">
+      <button data-cmd='{"type":"home"}' class="home">Home</button>
+    </section>
+
+    <p id="state" class="state"></p>
+  </main>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

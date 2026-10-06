@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "TV Control (Phase 2 placeholder)",
+  "version": "0.1.0",
+  "description": "Site adapters for Netflix/Prime/YouTube. Not wired up yet.",
+  "background": { "service_worker": "dist/background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.netflix.com/*", "https://www.primevideo.com/*", "https://www.youtube.com/*"],
+      "js": ["dist/content.js"]
+    }
+  ],
+  "permissions": ["activeTab"]
+}
