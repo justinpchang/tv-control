@@ -24,10 +24,9 @@ export class WindowsLauncher implements Launcher {
       } else {
         // Cold-start Edge per service: a new window in a running instance
         // ignores --start-fullscreen and accumulates tabs.
-        await runPs("Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force").catch(() => {});
-        await waitForExit("msedge", 10);
+        await closeEdge();
         const url = config.edgeUrls[app] ?? `https://www.${app}.com`;
-        await this.startDetached(`msedge --start-fullscreen ${url}`, `Edge ${app}`);
+        await this.startDetached(`msedge --start-fullscreen --disable-session-crashed-bubble ${url}`, `Edge ${app}`);
         await findAndMaximize(app, 8);
       }
       this.activeApp = app;
@@ -71,18 +70,14 @@ export class WindowsLauncher implements Launcher {
 
   async home(): Promise<void> {
     await runPs("Get-Process GeForceNOW -ErrorAction SilentlyContinue | Stop-Process -Force").catch(() => {});
-    await runPs("Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force").catch(() => {});
-    // Cold-start Edge: a new window in a lingering instance ignores --start-fullscreen.
-    await this.waitForExit("msedge", 10);
+    // Graceful Edge close: a force-kill reads as a crash and Edge nags with
+    // "Restore pages" on next launch. Force is only for stragglers.
+    await closeEdge();
     const port = process.env.PORT ?? 8080;
-    await this.startDetached(`msedge --start-fullscreen http://localhost:${port}/home.html`, "Edge home");
+    await this.startDetached(`msedge --start-fullscreen --disable-session-crashed-bubble http://localhost:${port}/home.html`, "Edge home");
     await findAndMaximize("TV Home", 8);
     this.activeApp = "home";
     log.info("home: recovery done");
-  }
-
-  private async waitForExit(name: string, timeoutSec: number): Promise<void> {
-    await waitForExit(name, timeoutSec);
   }
 
   async volume(action: "up" | "down" | "mute"): Promise<void> {
@@ -146,18 +141,24 @@ async function findAndMaximize(titleMatch: string, attempts: number): Promise<vo
   log.warn(`focus ${titleMatch}: no window matched after ${attempts}s`);
 }
 
-async function waitForExit(name: string, timeoutSec: number): Promise<void> {
-  for (let i = 0; i < timeoutSec; i++) {
-    const out = await runPsCapture(
-      `(Get-Process ${name} -ErrorAction SilentlyContinue | Measure-Object).Count`,
+// Ask Edge windows to close (clean exit, no restore prompt), wait up to 5s,
+// then force whatever is left (hung/crashed windows).
+async function closeEdge(): Promise<void> {
+  await runPs(
+    "Get-Process msedge -ErrorAction SilentlyContinue | ForEach-Object { $_.CloseMainWindow() | Out-Null }",
+  ).catch(() => {});
+  for (let i = 0; i < 5; i++) {
+    const count = await runPsCapture(
+      "(Get-Process msedge -ErrorAction SilentlyContinue | Measure-Object).Count",
     ).catch(() => "?");
-    if (out.trim() === "0") {
-      log.info(`exit wait: ${name} exited`);
+    if (count.trim() === "0") {
+      log.info("exit wait: msedge exited cleanly");
       return;
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  log.warn(`exit wait: ${name} still alive after ${timeoutSec}s; continuing anyway`);
+  log.warn("exit wait: msedge lingered; forcing leftovers");
+  await runPs("Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force").catch(() => {});
 }
 
 interface WinRect {

@@ -24,8 +24,9 @@ export const OVERLAY_CSS = `
 .tvyt-rowlabel { padding: 14px 40px 4px; font-size: 20px; font-weight: 600; color: #f1f1f1; }
 .tvyt-grid {
   flex: 1; overflow-y: auto; padding: 12px 40px 40px;
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  display: grid; grid-template-columns: repeat(4, 1fr);
   gap: 28px 20px; align-content: start;
+  width: 100%; max-width: 2200px; margin-inline: auto; box-sizing: border-box;
 }
 .tvyt-card { outline: none; }
 .tvyt-thumb {
@@ -39,10 +40,11 @@ export const OVERLAY_CSS = `
 }
 .tvyt-card.focused .tvyt-thumb { outline: 4px solid #fff; outline-offset: 3px; }
 .tvyt-title {
-  margin-top: 10px; font-size: 19px; line-height: 1.3; font-weight: 500;
+  margin-top: 10px; font-size: 22px; line-height: 1.3; font-weight: 500;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-.tvyt-channel { margin-top: 4px; font-size: 16px; color: #aaa; }
+.tvyt-channel { margin-top: 4px; font-size: 18px; color: #f1f1f1; }
+.tvyt-meta { margin-top: 2px; font-size: 16px; color: #aaa; }
 .tvyt-hrow {
   display: flex; gap: 16px; overflow-x: auto; padding: 8px 40px 4px;
 }

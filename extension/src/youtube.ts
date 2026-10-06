@@ -1,7 +1,6 @@
 import type { Command, HistoryEntry, NowPlaying, VideoItem, YoutubeContext } from "@tv-control/shared";
 import { OVERLAY_CSS } from "./overlayStyles.js";
 import {
-  columnsFor,
   formatTime,
   mergeHistory,
   moveFocus,
@@ -17,6 +16,7 @@ import {
 
 interface CardItem extends VideoItem {
   duration: string;
+  meta: string;
 }
 
 interface AdapterState {
@@ -117,7 +117,24 @@ function parseLockup(el: Element): CardItem | null {
     channel: clean(channelAnchor?.textContent, 200),
     thumbnail: src.startsWith("http") ? src : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
     duration,
+    meta: lockupMeta(el),
   };
+}
+
+// "1.2M views · 3 days ago" from the lockup metadata. Regexes stay narrow so
+// title words never match; metadata node preferred, whole card as fallback.
+function lockupMeta(el: Element): string {
+  const scopes = [
+    el.querySelector("yt-lockup-metadata-view-model")?.textContent,
+    el.textContent,
+  ];
+  for (const scope of scopes) {
+    const text = (scope ?? "").replace(/\s+/g, " ");
+    const views = /([\d.,]+\s*[KMB]?\s*views?)\b/i.exec(text)?.[1];
+    const age = /(\d[\d,]*\s+(?:second|minute|hour|day|week|month|year)s?\s+ago)/i.exec(text)?.[1];
+    if (views || age) return [views, age].filter(Boolean).join(" · ");
+  }
+  return "";
 }
 
 function scrapeItems(): CardItem[] {
@@ -153,6 +170,7 @@ function scrapeItems(): CardItem[] {
         channel,
         thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
         duration,
+        meta: lockupMeta(el),
       });
     }
   } catch {
@@ -269,7 +287,8 @@ function cardHtml(item: CardItem): string {
   return `<div class="tvyt-thumb"><img loading="lazy" alt="" src="${item.thumbnail}" />` +
     (item.duration ? `<span class="tvyt-dur">${safe(item.duration)}</span>` : "") +
     `</div><div class="tvyt-title">${safe(item.title) || "(untitled)"}</div>` +
-    (item.channel ? `<div class="tvyt-channel">${safe(item.channel)}</div>` : "");
+    (item.channel ? `<div class="tvyt-channel">${safe(item.channel)}</div>` : "") +
+    (item.meta ? `<div class="tvyt-meta">${safe(item.meta)}</div>` : "");
 }
 
 // The mini bar is a momentary overlay, not a resident panel: it lights up on
@@ -334,7 +353,7 @@ function renderHistoryRow(): void {
   state.history.slice(0, 12).forEach((h) => {
     const card = document.createElement("div");
     card.className = "tvyt-card tvyt-hcard";
-    card.innerHTML = cardHtml({ ...h, duration: "" });
+    card.innerHTML = cardHtml({ ...h, duration: "", meta: "" });
     card.addEventListener("click", () => openVideoId(h.videoId));
     historyRowEl!.appendChild(card);
   });
@@ -431,10 +450,9 @@ function runSearch(text: string): void {
   toast(`Searching “${text}”…`);
 }
 
+// The grid is fixed at 4 columns by CSS; focus math must agree with it.
 function gridColumns(): number {
-  // Mirror the CSS grid: min 300px cards + 20px gaps inside padded container.
-  const gridW = gridEl?.clientWidth ?? window.innerWidth - 80;
-  return columnsFor(gridW + 20, 320);
+  return 4;
 }
 
 export function handleCommand(command: Command): void {
