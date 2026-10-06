@@ -18,7 +18,9 @@ the entire PC experience. Samsung LAN control is parked, not a blocker
   loads only on Windows via `LAUNCHER=windows`.
 - `pwa/` — minimal Living Room remote (Vite + plain TS): app launch buttons,
   volume, Home. Talks to `ws://<host>:8080`.
-- `extension/` — Phase 2 placeholder (Edge MV3). Not wired up yet.
+- `extension/` — Edge MV3 adapters. YouTube ships (`youtube.ts` TV overlay +
+  `background.ts` WS bridge to the service); `content.ts` routes per site,
+  Netflix/Prime plug in next.
 
 ## Run
 
@@ -60,5 +62,5 @@ The Mac also holds a work `gh` account (`jpc-owner`); switch accounts with
 2. Next: clone on the OptiPlex, run `LAUNCHER=windows`, prove GeForce NOW
    launch + Home recovery on the real TV; apply the appliance checklist in
    `server/README.md` (no sleep, auto-login, autostart).
-3. Then: Edge extension adapters (`netflix.ts`, `prime.ts`, `youtube.ts`;
-   YouTube first), contextual PWA controls.
+3. Then: Edge extension adapters — YouTube done (overlay + search/history +
+   context-aware PWA panel); `netflix.ts`, `prime.ts` next.

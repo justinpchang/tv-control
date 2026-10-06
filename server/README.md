@@ -6,7 +6,8 @@ WebSocket + `/home.html` on the same `PORT` (default 8080).
 
 - `GET /logs` — recent log tail (also appended to `logs/service.log`, gitignored).
 - `GET /api/state` — state plus `diagnose()` (launcher mode, last error,
-  GeForce NOW targets checked with on-disk existence).
+  GeForce NOW targets checked with on-disk existence), live `adapters`, and
+  the latest per-app `contexts` reported by the extension.
 - `POST /api/command` — same commands as the WebSocket, drivable with curl.
 - `node supervisor.mjs` — runs the service as a child, restarts it with
   backoff on crash, and serves `GET /status` + `GET /logs` on

@@ -19,6 +19,41 @@
       <button data-cmd='{"type":"launch","app":"youtube"}'>YouTube</button>
     </section>
 
+    <section id="yt" class="yt" hidden>
+      <p id="yt-conn" class="status"></p>
+      <div id="yt-now" class="now" hidden></div>
+
+      <div class="dpad">
+        <span></span>
+        <button data-cmd='{"type":"navigate","direction":"up"}'>▲</button>
+        <span></span>
+        <button data-cmd='{"type":"navigate","direction":"left"}'>◀</button>
+        <button data-cmd='{"type":"select"}' class="ok">OK</button>
+        <button data-cmd='{"type":"navigate","direction":"right"}'>▶</button>
+        <span></span>
+        <button data-cmd='{"type":"navigate","direction":"down"}'>▼</button>
+        <button data-cmd='{"type":"back"}'>Back</button>
+      </div>
+
+      <div class="transport">
+        <button data-cmd='{"type":"seek","seconds":-10}'>−10s</button>
+        <button data-cmd='{"type":"playPause"}'>❚❚ / ▶</button>
+        <button data-cmd='{"type":"seek","seconds":10}'>+10s</button>
+        <button data-cmd='{"type":"fullscreen"}'>⛶ Full</button>
+      </div>
+
+      <form id="yt-search" class="search">
+        <input id="yt-q" type="search" placeholder="Search YouTube…" autocomplete="off" />
+        <button type="submit">Go</button>
+      </form>
+
+      <h2>On TV <span id="yt-screen" class="dim"></span></h2>
+      <div id="yt-items" class="list"></div>
+
+      <h2>History</h2>
+      <div id="yt-history" class="list"></div>
+    </section>
+
     <section class="group vol">
       <button data-cmd='{"type":"volume","action":"down"}'>Volume −</button>
       <button data-cmd='{"type":"volume","action":"mute"}'>Mute</button>

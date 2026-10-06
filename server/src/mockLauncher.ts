@@ -1,5 +1,5 @@
-import type { AppId, ServerState } from "@tv-control/shared";
-import type { Launcher } from "./launcher.js";
+import type { AppId } from "@tv-control/shared";
+import type { Launcher, LauncherState } from "./launcher.js";
 import { log } from "./log.js";
 
 // Safe anywhere. Records intent so Mac dev can prove the phone -> PC loop
@@ -24,7 +24,7 @@ export class MockLauncher implements Launcher {
     if (action === "mute") this.volumeMuted = !this.volumeMuted;
   }
 
-  getState(): ServerState {
+  getState(): LauncherState {
     return { activeApp: this.activeApp, volumeMuted: this.volumeMuted, updatedAt: new Date().toISOString() };
   }
 

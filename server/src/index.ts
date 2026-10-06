@@ -1,7 +1,17 @@
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
-import { parseCommand, type Command, type ServerMessage } from "@tv-control/shared";
+import {
+  isAdapterCommand,
+  parseAdapterMessage,
+  parseCommand,
+  type AdapterMessage,
+  type AppContext,
+  type AppId,
+  type Command,
+  type ServerMessage,
+  type ServerState,
+} from "@tv-control/shared";
 import type { Launcher } from "./launcher.js";
 import { MockLauncher } from "./mockLauncher.js";
 import { getLogs, log } from "./log.js";
@@ -27,7 +37,7 @@ function broadcast(wss: WebSocketServer, msg: ServerMessage): void {
   for (const client of wss.clients) send(client as WebSocket, msg);
 }
 
-function readBody(req: import("node:http").IncomingMessage, limit = 4096): Promise<string> {
+function readBody(req: import("node:http").IncomingMessage, limit = 65536): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = "";
     req.on("data", (c) => {
@@ -42,15 +52,58 @@ function readBody(req: import("node:http").IncomingMessage, limit = 4096): Promi
 const launcher = await createLauncher();
 log.info(`launcher: ${launcher.name}`);
 
-async function handleCommand(command: Command): Promise<void> {
+// Extension adapters (Phase 2): socket -> app registration from adapterHello,
+// plus the latest context reported per app (adapterContext).
+const adapters = new Map<WebSocket, AppId>();
+const contexts = new Map<AppId, AppContext>();
+
+function currentState(): ServerState {
+  return { ...launcher.getState(), adapters: [...new Set(adapters.values())] };
+}
+
+function relayTargets(): WebSocket[] {
+  const active = launcher.getState().activeApp;
+  const all = [...adapters.entries()];
+  const scoped = all.filter(([, app]) => app === active);
+  // Route to the active app's adapters; when nothing is active (home/unknown)
+  // fall back to all adapters so a fresh adapter still responds.
+  return (scoped.length > 0 ? scoped : all)
+    .map(([ws]) => ws)
+    .filter((ws) => ws.readyState === WebSocket.OPEN);
+}
+
+// Raw command JSON goes straight to the extension; the caller still acks
+// and broadcasts state to phones.
+function relayCommand(command: Command): void {
+  const raw = JSON.stringify(command);
+  for (const ws of relayTargets()) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(raw);
+  }
+}
+
+async function handleCommand(wss: WebSocketServer, command: Command): Promise<void> {
   switch (command.type) {
     case "launch": await launcher.launch(command.app); break;
-    case "home": await launcher.home(); break;
+    case "home": await launcher.home(); contexts.clear(); break;
     case "volume": await launcher.volume(command.action); break;
     case "ping": break;
-    // Phase 2 (extension navigate/select/back/playPause/search): ack for now.
-    default: break;
+    default:
+      // Adapter-routed media commands: forward to the extension. Unknown
+      // commands never reach here — parseCommand rejects them first.
+      if (isAdapterCommand(command)) relayCommand(command);
+      break;
   }
+}
+
+function handleAdapterMessage(wss: WebSocketServer, ws: WebSocket, msg: AdapterMessage): void {
+  if (msg.type === "adapterHello") {
+    adapters.set(ws, msg.app);
+    log.info(`adapter hello: ${msg.app}`);
+    broadcast(wss, { type: "state", state: currentState() });
+    return;
+  }
+  contexts.set(msg.context.app, msg.context);
+  broadcast(wss, { type: "context", context: msg.context });
 }
 
 const homeHtml = readFileSync(new URL("../public/home.html", import.meta.url), "utf8");
@@ -78,7 +131,8 @@ const httpServer = createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({
       launcher: launcher.name,
-      state: launcher.getState(),
+      state: currentState(),
+      contexts: Object.fromEntries(contexts),
       uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
       diagnose: await launcher.diagnose(),
     }));
@@ -98,9 +152,9 @@ const httpServer = createServer(async (req, res) => {
   if (url.pathname === "/api/command" && req.method === "POST") {
     try {
       const command = parseCommand(JSON.parse(await readBody(req)));
-      await handleCommand(command);
+      await handleCommand(wss, command);
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, state: launcher.getState() }));
+      res.end(JSON.stringify({ ok: true, state: currentState() }));
     } catch (e) {
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "bad command" }));
@@ -113,21 +167,32 @@ const httpServer = createServer(async (req, res) => {
 const wss = new WebSocketServer({ server: httpServer });
 
 wss.on("connection", (ws) => {
-  send(ws, { type: "state", state: launcher.getState() });
+  send(ws, { type: "state", state: currentState() });
+  // A fresh phone that connects mid-session also needs the latest context.
+  for (const context of contexts.values()) send(ws, { type: "context", context });
   ws.on("message", async (raw) => {
-    let command: Command;
+    let text: string;
     try {
-      command = parseCommand(JSON.parse(raw.toString()));
-    } catch (e) {
-      send(ws, { type: "error", message: e instanceof Error ? e.message : "bad command" });
+      text = raw.toString();
+      const command = parseCommand(JSON.parse(text));
+      await handleCommand(wss, command);
+      send(ws, { type: "ack", command });
+      broadcast(wss, { type: "state", state: currentState() });
       return;
+    } catch (e) {
+      // Not a phone command — may be an adapter message; fall through.
+      void e;
     }
     try {
-      await handleCommand(command);
-      send(ws, { type: "ack", command });
-      broadcast(wss, { type: "state", state: launcher.getState() });
+      handleAdapterMessage(wss, ws, parseAdapterMessage(JSON.parse(text!)));
     } catch (e) {
-      send(ws, { type: "error", message: e instanceof Error ? e.message : "action failed" });
+      send(ws, { type: "error", message: e instanceof Error ? e.message : "bad command" });
+    }
+  });
+  ws.on("close", () => {
+    if (adapters.delete(ws)) {
+      log.info("adapter disconnected");
+      broadcast(wss, { type: "state", state: currentState() });
     }
   });
 });

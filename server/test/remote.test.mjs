@@ -98,6 +98,116 @@ try {
   sup.kill("SIGTERM");
 }
 
+// --- Part 3: adapter relay (extension bridge + context broadcast) ---
+const ADAPTER_PORT = 18083;
+const asvc = spawn("node", ["dist/index.js"], {
+  env: { ...process.env, PORT: String(ADAPTER_PORT), LAUNCHER: "mock" },
+  stdio: "ignore",
+});
+function wsConnect(port) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://localhost:${port}`);
+    ws.addEventListener("open", () => resolve(ws), { once: true });
+    ws.addEventListener("error", (e) => reject(e), { once: true });
+  });
+}
+function wsNext(ws, pred, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.removeEventListener("message", onMsg);
+      reject(new Error("timed out waiting for ws message"));
+    }, timeoutMs);
+    const onMsg = (ev) => {
+      try {
+        const msg = JSON.parse(String(ev.data));
+        if (pred(msg)) {
+          clearTimeout(timer);
+          ws.removeEventListener("message", onMsg);
+          resolve(msg);
+        }
+      } catch { /* ignore unparsable */ }
+    };
+    ws.addEventListener("message", onMsg);
+  });
+}
+try {
+  await waitFor(`http://localhost:${ADAPTER_PORT}/health`, (r) => r.status === 200 && r.body.ok);
+  const phone = await wsConnect(ADAPTER_PORT);
+  const adapter = await wsConnect(ADAPTER_PORT);
+  try {
+    adapter.send(JSON.stringify({ type: "adapterHello", app: "youtube" }));
+    const helloState = await waitFor(
+      `http://localhost:${ADAPTER_PORT}/api/state`,
+      (r) => r.body.state?.adapters?.includes("youtube"),
+    );
+    check("adapter hello registers", true, JSON.stringify(helloState.body.state.adapters));
+
+    // Launch youtube first so relay scoping has an active app, then drive it.
+    await json(`http://localhost:${ADAPTER_PORT}/api/command`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "launch", app: "youtube" }),
+    });
+    const navSeen = wsNext(adapter, (m) => m.type === "navigate" && m.direction === "right");
+    phone.send(JSON.stringify({ type: "navigate", direction: "right" }));
+    check("navigate relayed to adapter", (await navSeen).direction === "right");
+
+    const ctxSeen = wsNext(phone, (m) => m.type === "context" && m.context?.app === "youtube");
+    adapter.send(JSON.stringify({
+      type: "adapterContext",
+      context: {
+        app: "youtube", screen: "browse", query: "", items: [], focusIndex: 0,
+        nowPlaying: null, history: [],
+      },
+    }));
+    check("context broadcast to phone", (await ctxSeen).context.screen === "browse");
+
+    const withCtx = await json(`http://localhost:${ADAPTER_PORT}/api/state`);
+    check("context in /api/state", withCtx.body.contexts?.youtube?.screen === "browse");
+
+    const badSeek = await json(`http://localhost:${ADAPTER_PORT}/api/command`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "seek", seconds: "lots" }),
+    });
+    check("bad seek rejected", badSeek.status === 400 && badSeek.body.ok === false);
+
+    const badOpen = await json(`http://localhost:${ADAPTER_PORT}/api/command`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "openVideo", videoId: "not a video id!!" }),
+    });
+    check("bad openVideo rejected", badOpen.status === 400 && badOpen.body.ok === false);
+
+    const goodSeek = await json(`http://localhost:${ADAPTER_PORT}/api/command`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "seek", seconds: -10 }),
+    });
+    check("good seek accepted", goodSeek.status === 200 && goodSeek.body.ok === true);
+
+    const gotFs = wsNext(adapter, (m) => m.type === "fullscreen");
+    phone.send(JSON.stringify({ type: "fullscreen" }));
+    check("fullscreen relayed to adapter", (await gotFs).type === "fullscreen");
+
+    const bogusAdapter = wsNext(adapter, (m) => m.type === "error");
+    adapter.send(JSON.stringify({ type: "adapterContext", context: { app: "vimeo" } }));
+    check("bad adapter context errors", (await bogusAdapter).type === "error");
+
+    adapter.close();
+    const gone = await waitFor(
+      `http://localhost:${ADAPTER_PORT}/api/state`,
+      (r) => Array.isArray(r.body.state?.adapters) && r.body.state.adapters.length === 0,
+    );
+    check("adapter disconnect unregisters", true, JSON.stringify(gone.body.state.adapters));
+  } finally {
+    phone.close();
+    adapter.close();
+  }
+} finally {
+  asvc.kill("SIGTERM");
+}
+
 const failed = results.filter((r) => !r).length;
 console.log(failed === 0 ? "REMOTE TEST OK" : `REMOTE TEST FAILED (${failed})`);
 process.exit(failed === 0 ? 0 : 1);

@@ -4,10 +4,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc --noEmit -p tsconfig.json && esbuild src/content.ts --bundle --format=iife --outfile=dist/content.js && esbuild src/background.ts --bundle --format=iife --outfile=dist/background.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@tv-control/shared": "file:../shared"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.280",
+    "esbuild": "^0.28.2",
     "typescript": "^5.6.3"
   }
 }
