@@ -22,9 +22,13 @@ export class WindowsLauncher implements Launcher {
         // Native app: real maximize, not F11 (GFN ignores it).
         await findAndMaximize("GeForce NOW", 12);
       } else {
+        // Cold-start Edge per service: a new window in a running instance
+        // ignores --start-fullscreen and accumulates tabs.
+        await runPs("Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force").catch(() => {});
+        await waitForExit("msedge", 10);
         const url = config.edgeUrls[app] ?? `https://www.${app}.com`;
         await this.startDetached(`msedge --start-fullscreen ${url}`, `Edge ${app}`);
-        await findAndMaximize(app, 6);
+        await findAndMaximize(app, 8);
       }
       this.activeApp = app;
       this.lastError = null;
@@ -78,17 +82,7 @@ export class WindowsLauncher implements Launcher {
   }
 
   private async waitForExit(name: string, timeoutSec: number): Promise<void> {
-    for (let i = 0; i < timeoutSec; i++) {
-      const out = await runPsCapture(
-        `(Get-Process ${name} -ErrorAction SilentlyContinue | Measure-Object).Count`,
-      ).catch(() => "?");
-      if (out.trim() === "0") {
-        log.info(`home: ${name} exited`);
-        return;
-      }
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-    log.warn(`home: ${name} still alive after ${timeoutSec}s; launching anyway`);
+    await waitForExit(name, timeoutSec);
   }
 
   async volume(action: "up" | "down" | "mute"): Promise<void> {
@@ -130,29 +124,85 @@ function sendKeys(keys: string): Promise<void> {
   return runPs(`(New-Object -ComObject WScript.Shell).SendKeys('${keys}')`);
 }
 
-// Poll for the window, maximize + foreground it, and report the resulting
-// rectangle against its screen so fullscreen is verifiable from the logs.
+// Poll for the window and foreground it. Maximize only when it does not already
+// cover its screen — a native-fullscreen window must not be "maximized".
+// The rectangle is logged so fullscreen is verifiable remotely.
 async function findAndMaximize(titleMatch: string, attempts: number): Promise<void> {
   for (let i = 1; i <= attempts; i++) {
-    let line = "";
-    try {
-      const out = await runPsCapture(maximizeScript(titleMatch));
-      line = out.trim().split("\n").pop()?.trim() ?? "";
-    } catch (e) {
-      log.warn(`focus ${titleMatch}: powershell failed (${e instanceof Error ? e.message : e})`);
+    const query = await windowRect(titleMatch);
+    if (query === null) {
+      if (i === 1) log.info(`focus ${titleMatch}: waiting for window…`);
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
+    if (coversScreen(query)) {
+      log.info(`focus ${titleMatch}: ${formatRect(query)} already fullscreen (attempt ${i})`);
       return;
     }
-    if (line.startsWith("WINDOW")) {
-      log.info(`focus ${titleMatch}: ${line} (attempt ${i})`);
-      return;
-    }
-    if (i === 1) log.info(`focus ${titleMatch}: waiting for window…`);
-    await new Promise((r) => setTimeout(r, 1000));
+    const after = await maximizeNow(titleMatch);
+    log.info(`focus ${titleMatch}: ${after ? formatRect(after) + " maximized" : "maximize failed"} (attempt ${i})`);
+    return;
   }
   log.warn(`focus ${titleMatch}: no window matched after ${attempts}s`);
 }
 
-function maximizeScript(titleMatch: string): string {
+async function waitForExit(name: string, timeoutSec: number): Promise<void> {
+  for (let i = 0; i < timeoutSec; i++) {
+    const out = await runPsCapture(
+      `(Get-Process ${name} -ErrorAction SilentlyContinue | Measure-Object).Count`,
+    ).catch(() => "?");
+    if (out.trim() === "0") {
+      log.info(`exit wait: ${name} exited`);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  log.warn(`exit wait: ${name} still alive after ${timeoutSec}s; continuing anyway`);
+}
+
+interface WinRect {
+  left: number; top: number; right: number; bottom: number;
+  screenW: number; screenH: number; screenX: number; screenY: number;
+}
+
+function formatRect(r: WinRect): string {
+  return `WINDOW left=${r.left} top=${r.top} right=${r.right} bottom=${r.bottom} ` +
+    `screen=${r.screenW}x${r.screenH}+${r.screenX}+${r.screenY}`;
+}
+
+function coversScreen(r: WinRect): boolean {
+  const tol = 16;
+  return r.left <= r.screenX + tol && r.top <= r.screenY + tol &&
+    (r.right - r.left) >= r.screenW - tol && (r.bottom - r.top) >= r.screenH - tol;
+}
+
+function parseRect(line: string): WinRect | null {
+  const m = /WINDOW left=(-?\d+) top=(-?\d+) right=(-?\d+) bottom=(-?\d+) screen=(\d+)x(\d+)\+(-?\d+)\+(-?\d+)/.exec(line);
+  if (!m) return null;
+  const n = m.slice(1).map(Number);
+  return { left: n[0], top: n[1], right: n[2], bottom: n[3], screenW: n[4], screenH: n[5], screenX: n[6], screenY: n[7] };
+}
+
+async function windowRect(titleMatch: string): Promise<WinRect | null> {
+  try {
+    const out = await runPsCapture(rectScript(titleMatch, false));
+    return parseRect(out.trim().split("\n").pop()?.trim() ?? "");
+  } catch {
+    return null;
+  }
+}
+
+async function maximizeNow(titleMatch: string): Promise<WinRect | null> {
+  try {
+    const out = await runPsCapture(rectScript(titleMatch, true));
+    return parseRect(out.trim().split("\n").pop()?.trim() ?? "");
+  } catch (e) {
+    log.warn(`focus ${titleMatch}: powershell failed (${e instanceof Error ? e.message : e})`);
+    return null;
+  }
+}
+
+function rectScript(titleMatch: string, maximize: boolean): string {
   return [
     "Add-Type -AssemblyName System.Windows.Forms;",
     "$sig = @'",
@@ -169,7 +219,7 @@ function maximizeScript(titleMatch: string): string {
     `$p = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like '*${titleMatch}*' } | Select-Object -First 1;`,
     "if (-not $p) { Write-Output 'NO_WINDOW'; exit 0 }",
     "$h = $p.MainWindowHandle;",
-    "[Win32]::ShowWindow($h, 3) | Out-Null;",
+    maximize ? "[Win32]::ShowWindow($h, 3) | Out-Null;" : "",
     "[Win32]::SetForegroundWindow($h) | Out-Null;",
     "Start-Sleep -Milliseconds 600;",
     "$rect = New-Object Win32+RECT;",

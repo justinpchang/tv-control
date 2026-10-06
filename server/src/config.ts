@@ -20,7 +20,7 @@ const DEFAULTS: AppsConfig = {
   edgeUrls: {
     netflix: "https://www.netflix.com",
     prime: "https://www.primevideo.com",
-    youtube: "https://www.youtube.com/tv",
+    youtube: "https://www.youtube.com/",
   },
 };
 
