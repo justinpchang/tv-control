@@ -9,6 +9,8 @@
     "build:shared": "npm run build -w @tv-control/shared",
     "build:server": "npm run build -w @tv-control/server",
     "dev:server": "npm run dev -w @tv-control/server",
-    "start:server": "npm run start -w @tv-control/server"
+    "start:server": "npm run start -w @tv-control/server",
+    "supervise:server": "npm run supervise -w @tv-control/server",
+    "test": "npm run test -w @tv-control/server"
   }
 }

@@ -2,6 +2,22 @@
 
 WebSocket + `/home.html` on the same `PORT` (default 8080).
 
+## Remote debugging (from another machine)
+
+- `GET /logs` — recent log tail (also appended to `logs/service.log`, gitignored).
+- `GET /api/state` — state plus `diagnose()` (launcher mode, last error,
+  GeForce NOW targets checked with on-disk existence).
+- `POST /api/command` — same commands as the WebSocket, drivable with curl.
+- `node supervisor.mjs` — runs the service as a child, restarts it with
+  backoff on crash, and serves `GET /status` + `GET /logs` on
+  `SUPERVISOR_PORT` (default 8081) so a dead service is still readable.
+  On the PC, allow inbound TCP on both ports in Defender Firewall.
+
+## App targets
+
+Copy `apps.json.example` to `apps.json` and edit paths/URLs there.
+Reloaded on every launch call — no restart needed.
+
 ## Appliance checklist (OptiPlex, run once)
 
 - Settings → Power: sleep `Never`, screen stays on for the TV.

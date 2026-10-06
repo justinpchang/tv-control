@@ -7,4 +7,6 @@ export interface Launcher {
   home(): Promise<void>;
   volume(action: "up" | "down" | "mute"): Promise<void>;
   getState(): ServerState;
+  // Machine-readable health for remote debugging (GET /api/state).
+  diagnose(): Promise<Record<string, unknown>>;
 }

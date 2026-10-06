@@ -1,42 +1,64 @@
-I want to turn a Dell OptiPlex 7060 into my main TV streaming/gaming box. It is connected to a Samsung UN55MU6300FXZA TV using DisplayPort → HDMI. The TV IP is `192.168.1.163`.
+# TV Control
 
-## Requirements
+Turn a Dell OptiPlex 7060 (Windows, DisplayPort → HDMI to Samsung UN55MU6300FXZA)
+into the main TV streaming/gaming box, remote-controlled by an iPhone PWA.
 
-- The PC can stay on 24/7; only the TV needs normal power on/off behavior.
-- An iPhone PWA should be the only remote/UI.
-- I do not want a physical remote, mouse, or keyboard in normal use.
-- The PWA should talk to a small local service running on the Windows PC, preferably over HTTP/WebSocket.
-- Tapping Netflix, Prime, YouTube, GeForce NOW, etc. should automatically:
-  - turn on the TV if necessary,
-  - switch the TV to the PC HDMI input,
-  - launch/focus the appropriate Windows app or browser.
-- “Off” should turn off the TV while leaving the PC running.
-- Use Samsung LAN control rather than buying a USB HDMI-CEC adapter if possible.
-- Investigate the MU6300’s Tizen WebSocket API and Wake-on-LAN for power-on.
-- Streaming services should preferably run in Edge/Chromium so browser extensions/ad blocking can be used.
-- GeForce NOW should use the native Windows app.
-- The PWA should send semantic commands such as:
-  - `launch.netflix`
-  - `launch.geforce`
-  - `home`
-  - `back`
-  - `left`
-  - `right`
-  - `up`
-  - `down`
-  - `select`
-  - `playPause`
-- Do not make mouse emulation the normal control model.
-- Eventually, a custom browser extension can provide service-specific navigation for Netflix/Prime/etc. so the phone can control their web UIs cleanly.
-- There should always be a reliable `Home` action that restores the system to a known usable state.
+## Key decision
 
-## First thing to verify
+The TV remote owns TV power/input. Once the TV is on the PC input, the PWA owns
+the entire PC experience. Samsung LAN control is parked, not a blocker
+(see git history for the original Tizen probe if it gets revived).
 
-Test what LAN control is actually possible with the Samsung TV at `192.168.1.163`, especially:
+## Layout
 
-- power off
-- Wake-on-LAN power on
-- volume control
-- Home/Back/navigation
-- reliable switching to the HDMI input containing the PC
-- pairing/authentication behavior for the Samsung Tizen WebSocket API
+- `shared/` — phone → PC protocol. Source of truth; PWA and server must follow it.
+- `server/` — Windows control service: WebSocket + `/home.html` on one `PORT`
+  (default 8080). `MockLauncher` runs anywhere; `WindowsLauncher` (Edge
+  fullscreen, GeForce NOW, PowerShell focus/volume, aggressive `home` recovery)
+  loads only on Windows via `LAUNCHER=windows`.
+- `pwa/` — minimal Living Room remote (Vite + plain TS): app launch buttons,
+  volume, Home. Talks to `ws://<host>:8080`.
+- `extension/` — Phase 2 placeholder (Edge MV3). Not wired up yet.
+
+## Run
+
+```sh
+npm install && npm run build
+PORT=8080 LAUNCHER=mock npm run dev:server   # Mac dev
+cd pwa && npm install && npm run dev          # remote UI on :5173
+npm test                                      # service endpoints + supervisor restart
+```
+
+On the PC run `npm run supervise:server` instead of `start:server`: the
+supervisor restarts the service on crash and serves `/status` + `/logs` on
+port 8081. Debug from the Mac with `GET /logs`, `GET /api/state`,
+`POST /api/command` against the PC's LAN IP.
+
+Throwaway smoke scripts live in `/tmp` (`smoke-server.mjs`, `smoke-pwa.mjs`);
+do not commit them. Real tests belong in the repo when behavior needs locking in.
+
+## Conventions
+
+- Extend the protocol in `shared/` first, then server, then PWA. Reject unknown
+  commands with `error`, never crash the loop.
+- No mouse emulation as a control model. `home` must always restore a known
+  usable state (close known apps, reopen `/home.html` fullscreen).
+- Streaming in Edge (ad blocking); GeForce NOW via the native Windows app.
+- No secrets in the tree: `.tv-token`, `.env`, `node_modules/`, `dist/` are
+  gitignored. LAN IPs in docs are fine.
+
+## Repo
+
+Public: `https://github.com/justinpchang/tv-control` (`main`).
+This checkout uses repo-local git identity `justinpchang` + noreply email.
+The Mac also holds a work `gh` account (`jpc-owner`); switch accounts with
+`gh auth switch --user <name>` and leave `jpc-owner` active when done.
+
+## Roadmap
+
+1. Done: phone → PC loop proven with mock launcher (Mac + iPhone over LAN).
+2. Next: clone on the OptiPlex, run `LAUNCHER=windows`, prove GeForce NOW
+   launch + Home recovery on the real TV; apply the appliance checklist in
+   `server/README.md` (no sleep, auto-login, autostart).
+3. Then: Edge extension adapters (`netflix.ts`, `prime.ts`, `youtube.ts`;
+   YouTube first), contextual PWA controls.

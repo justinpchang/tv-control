@@ -1,0 +1,12 @@
+{
+  "_comment": "Optional. Copy to apps.json and edit on the PC; reloaded on every launch, no restart needed. This file is committed as an example — apps.json itself is gitignored.",
+  "geforceUri": "geforcenow:",
+  "geforceExePaths": [
+    "C:\\Program Files\\NVIDIA Corporation\\GeForce NOW\\GeForceNOW.exe"
+  ],
+  "edgeUrls": {
+    "netflix": "https://www.netflix.com",
+    "prime": "https://www.primevideo.com",
+    "youtube": "https://www.youtube.com/tv"
+  }
+}
