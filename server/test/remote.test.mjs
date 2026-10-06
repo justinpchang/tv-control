@@ -156,8 +156,7 @@ try {
     adapter.send(JSON.stringify({
       type: "adapterContext",
       context: {
-        app: "youtube", screen: "browse", query: "", items: [], focusIndex: 0,
-        nowPlaying: null, history: [],
+        app: "youtube", screen: "browse", query: "", nowPlaying: null,
       },
     }));
     check("context broadcast to phone", (await ctxSeen).context.screen === "browse");
@@ -186,9 +185,30 @@ try {
     });
     check("good seek accepted", goodSeek.status === 200 && goodSeek.body.ok === true);
 
-    const gotFs = wsNext(adapter, (m) => m.type === "fullscreen");
+    // Fullscreen is a server-side keypress; it must not also toggle in-page.
+    const fsAck = wsNext(phone, (m) => m.type === "ack" && m.command?.type === "fullscreen");
+    const fsLeak = wsNext(adapter, (m) => m.type === "fullscreen", 500).then(() => true, () => false);
     phone.send(JSON.stringify({ type: "fullscreen" }));
-    check("fullscreen relayed to adapter", (await gotFs).type === "fullscreen");
+    await fsAck;
+    check("fullscreen handled server-side", !(await fsLeak));
+
+    for (const cmd of [{ type: "seekTo", seconds: 42 }, { type: "captions" }, { type: "quality", level: "hd1080" }]) {
+      const seen = wsNext(adapter, (m) => m.type === cmd.type);
+      phone.send(JSON.stringify(cmd));
+      check(`${cmd.type} relayed to adapter`, JSON.stringify(await seen) === JSON.stringify(cmd));
+    }
+
+    const badQuality = await json(`http://localhost:${ADAPTER_PORT}/api/command`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "quality", level: "'; rm -rf" }),
+    });
+    check("bad quality rejected", badQuality.status === 400);
+
+    // Keepalive pings are accepted silently (no error back).
+    const pingErr = wsNext(adapter, (m) => m.type === "error", 500).then(() => true, () => false);
+    adapter.send(JSON.stringify({ type: "adapterPing" }));
+    check("adapterPing accepted", !(await pingErr));
 
     const bogusAdapter = wsNext(adapter, (m) => m.type === "error");
     adapter.send(JSON.stringify({ type: "adapterContext", context: { app: "vimeo" } }));

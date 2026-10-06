@@ -16,6 +16,7 @@ export class WindowsLauncher implements Launcher {
 
   async launch(app: AppId): Promise<void> {
     const config = loadConfig();
+    const t0 = Date.now();
     try {
       if (app === "geforce") {
         await this.launchGeforce(config.geforceUri, config.geforceExePaths);
@@ -25,13 +26,17 @@ export class WindowsLauncher implements Launcher {
         // Cold-start Edge per service: a new window in a running instance
         // ignores --start-fullscreen and accumulates tabs.
         await closeEdge();
+        const closedAt = Date.now();
         const url = config.edgeUrls[app] ?? `https://www.${app}.com`;
         await this.startDetached(`msedge --start-fullscreen --disable-session-crashed-bubble ${url}`, `Edge ${app}`);
-        await findAndMaximize(app, 8);
+        log.info(`launch ${app}: edge closed in ${closedAt - t0}ms, started in ${Date.now() - closedAt}ms`);
+        // --start-fullscreen already covers the screen; focusing is a
+        // safety net, so don't hold the phone's ack on it.
+        void findAndMaximize(app, 8);
       }
       this.activeApp = app;
       this.lastError = null;
-      log.info(`launch ${app}: ok`);
+      log.info(`launch ${app}: ok in ${Date.now() - t0}ms`);
     } catch (e) {
       this.lastError = e instanceof Error ? e.message : String(e);
       log.error(`launch ${app}: ${this.lastError}`);
@@ -75,7 +80,7 @@ export class WindowsLauncher implements Launcher {
     await closeEdge();
     const port = process.env.PORT ?? 8080;
     await this.startDetached(`msedge --start-fullscreen --disable-session-crashed-bubble http://localhost:${port}/home.html`, "Edge home");
-    await findAndMaximize("TV Home", 8);
+    void findAndMaximize("TV Home", 8);
     this.activeApp = "home";
     log.info("home: recovery done");
   }
@@ -84,6 +89,14 @@ export class WindowsLauncher implements Launcher {
     const key = action === "up" ? "{VOLUME_UP}" : action === "down" ? "{VOLUME_DOWN}" : "{VOLUME_MUTE}";
     await sendKeys(key);
     if (action === "mute") this.volumeMuted = !this.volumeMuted;
+  }
+
+  // Real keystroke to the app window: the player sees a trusted "f", which
+  // works where a page-initiated requestFullscreen is refused.
+  async fullscreen(): Promise<void> {
+    const title = WINDOW_TITLES[this.activeApp as AppId];
+    const activate = title ? `[void]$s.AppActivate('${title}');` : "";
+    await runPs(`$s = New-Object -ComObject WScript.Shell; ${activate} $s.SendKeys('f')`);
   }
 
   getState(): LauncherState {
@@ -106,6 +119,13 @@ export class WindowsLauncher implements Launcher {
     return captureScreenshot();
   }
 }
+
+// Window title suffixes AppActivate can match for the Edge streaming apps.
+const WINDOW_TITLES: Partial<Record<AppId, string>> = {
+  youtube: "YouTube",
+  netflix: "Netflix",
+  prime: "Prime Video",
+};
 
 export function runPs(script: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -141,24 +161,28 @@ async function findAndMaximize(titleMatch: string, attempts: number): Promise<vo
   log.warn(`focus ${titleMatch}: no window matched after ${attempts}s`);
 }
 
-// Ask Edge windows to close (clean exit, no restore prompt), wait up to 5s,
-// then force whatever is left (hung/crashed windows).
+// Ask Edge windows to close (clean exit, so session state is saved and there
+// is no restore prompt), then force the windowless leftovers. Startup boost /
+// background mode keep msedge processes alive indefinitely, so waiting for
+// every process to exit just burned the full timeout on each launch. One
+// PowerShell call: each spawn costs ~0.5s on the OptiPlex.
 async function closeEdge(): Promise<void> {
-  await runPs(
-    "Get-Process msedge -ErrorAction SilentlyContinue | ForEach-Object { $_.CloseMainWindow() | Out-Null }",
-  ).catch(() => {});
-  for (let i = 0; i < 5; i++) {
-    const count = await runPsCapture(
-      "(Get-Process msedge -ErrorAction SilentlyContinue | Measure-Object).Count",
-    ).catch(() => "?");
-    if (count.trim() === "0") {
-      log.info("exit wait: msedge exited cleanly");
-      return;
-    }
-    await new Promise((r) => setTimeout(r, 1000));
-  }
-  log.warn("exit wait: msedge lingered; forcing leftovers");
-  await runPs("Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force").catch(() => {});
+  const out = await runPsCapture([
+    "$edge = Get-Process msedge -ErrorAction SilentlyContinue;",
+    "if (-not $edge) { Write-Output 'none'; exit 0 }",
+    "$edge | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { $_.CloseMainWindow() | Out-Null };",
+    "$deadline = (Get-Date).AddSeconds(4);",
+    "while ((Get-Date) -lt $deadline) {",
+    "  $w = Get-Process msedge -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 };",
+    "  if (-not $w) { break }",
+    "  Start-Sleep -Milliseconds 100",
+    "}",
+    "$state = if ($w) { 'forced' } else { 'closed' };",
+    "Start-Sleep -Milliseconds 300;",
+    "Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;",
+    "Write-Output $state",
+  ].join("\n")).catch((e) => `error ${e instanceof Error ? e.message : e}`);
+  log.info(`exit wait: msedge ${out.trim()}`);
 }
 
 interface WinRect {

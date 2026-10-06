@@ -2,69 +2,108 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#101318" />
+  <!-- No zoom: double-tapping a button must never scale the remote. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0d12" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Living Room" />
   <title>Living Room</title>
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
   <main class="remote">
-    <h1>Living Room</h1>
-    <p id="status" class="status">connecting…</p>
+    <header class="top">
+      <h1>Living Room</h1>
+      <span id="status" class="conn"><i></i><span>connecting…</span></span>
+    </header>
 
-    <section class="group">
-      <button data-cmd='{"type":"launch","app":"geforce"}'>GeForce NOW</button>
-      <button data-cmd='{"type":"launch","app":"netflix"}'>Netflix</button>
-      <button data-cmd='{"type":"launch","app":"prime"}'>Prime Video</button>
-      <button data-cmd='{"type":"launch","app":"youtube"}'>YouTube</button>
+    <section class="apps">
+      <button class="app" data-app="youtube" data-cmd='{"type":"launch","app":"youtube"}'><b class="mark yt"></b>YouTube</button>
+      <button class="app" data-app="netflix" data-cmd='{"type":"launch","app":"netflix"}'><b class="mark nf"></b>Netflix</button>
+      <button class="app" data-app="prime" data-cmd='{"type":"launch","app":"prime"}'><b class="mark pv"></b>Prime</button>
+      <button class="app" data-app="geforce" data-cmd='{"type":"launch","app":"geforce"}'><b class="mark gf"></b>GeForce</button>
+    </section>
+
+    <section class="sys">
+      <button class="home" data-cmd='{"type":"home"}' aria-label="Home">
+        <svg viewBox="0 0 24 24"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 9.5V20h13V9.5"/></svg>Home
+      </button>
+      <div class="vol">
+        <button data-cmd='{"type":"volume","action":"down"}' data-repeat aria-label="Volume down">
+          <svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg>
+        </button>
+        <button id="mute" data-cmd='{"type":"volume","action":"mute"}' aria-label="Mute">
+          <svg viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path class="wave" d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>
+        </button>
+        <button data-cmd='{"type":"volume","action":"up"}' data-repeat aria-label="Volume up">
+          <svg viewBox="0 0 24 24"><path d="M6 12h12M12 6v12"/></svg>
+        </button>
+      </div>
     </section>
 
     <section id="yt" class="yt" hidden>
-      <p id="yt-conn" class="status"></p>
-      <div id="yt-now" class="now" hidden></div>
-
-      <div class="dpad">
-        <span></span>
-        <button data-cmd='{"type":"navigate","direction":"up"}'>▲</button>
-        <span></span>
-        <button data-cmd='{"type":"navigate","direction":"left"}'>◀</button>
-        <button data-cmd='{"type":"select"}' class="ok">OK</button>
-        <button data-cmd='{"type":"navigate","direction":"right"}'>▶</button>
-        <span></span>
-        <button data-cmd='{"type":"navigate","direction":"down"}'>▼</button>
-        <button data-cmd='{"type":"back"}'>Back</button>
+      <div class="yt-head">
+        <h2><b class="mark yt"></b>YouTube</h2>
+        <span id="yt-conn" class="pill"></span>
       </div>
 
-      <div class="transport">
-        <button data-cmd='{"type":"seek","seconds":-10}'>−10s</button>
-        <button data-cmd='{"type":"playPause"}'>❚❚ / ▶</button>
-        <button data-cmd='{"type":"seek","seconds":10}'>+10s</button>
-        <button data-cmd='{"type":"fullscreen"}'>⛶ Full</button>
+      <div id="yt-now" class="now" hidden>
+        <div class="np-info">
+          <img id="np-thumb" alt="" />
+          <div class="np-text">
+            <div id="np-title" class="np-title"></div>
+            <div id="np-channel" class="np-channel"></div>
+          </div>
+        </div>
+        <input id="np-scrub" class="scrub" type="range" min="0" max="1000" step="1" value="0" aria-label="Timeline" />
+        <div class="times"><span id="np-cur">0:00</span><span id="np-dur">0:00</span></div>
+        <div class="transport">
+          <button data-cmd='{"type":"seek","seconds":-10}' aria-label="Back 10 seconds">
+            <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 3.5v4h4"/><text x="12" y="15.3" text-anchor="middle">10</text></svg>
+          </button>
+          <button id="np-play" class="play" data-cmd='{"type":"playPause"}' aria-label="Play or pause">
+            <svg class="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>
+            <svg class="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></svg>
+          </button>
+          <button data-cmd='{"type":"seek","seconds":10}' aria-label="Forward 10 seconds">
+            <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 3.5v4h-4"/><text x="12" y="15.3" text-anchor="middle">10</text></svg>
+          </button>
+        </div>
+        <div class="opts">
+          <button id="np-cc" class="opt" data-cmd='{"type":"captions"}'>CC</button>
+          <label class="opt select">
+            <span id="np-quality-label">Quality</span>
+            <select id="np-quality" aria-label="Quality"></select>
+          </label>
+          <button class="opt" data-cmd='{"type":"fullscreen"}' aria-label="Fullscreen">
+            <svg viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></svg>
+          </button>
+        </div>
       </div>
 
-      <form id="yt-search" class="search">
-        <input id="yt-q" type="search" placeholder="Search YouTube…" autocomplete="off" />
-        <button type="submit">Go</button>
+      <div class="pad">
+        <button class="up" data-cmd='{"type":"navigate","direction":"up"}' data-repeat aria-label="Up"><svg viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></svg></button>
+        <button class="left" data-cmd='{"type":"navigate","direction":"left"}' data-repeat aria-label="Left"><svg viewBox="0 0 24 24"><path d="m15 6-6 6 6 6"/></svg></button>
+        <button class="ok" data-cmd='{"type":"select"}'>OK</button>
+        <button class="right" data-cmd='{"type":"navigate","direction":"right"}' data-repeat aria-label="Right"><svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg></button>
+        <button class="down" data-cmd='{"type":"navigate","direction":"down"}' data-repeat aria-label="Down"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
+      </div>
+
+      <div class="pad-row">
+        <button data-cmd='{"type":"back"}'>
+          <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>Back
+        </button>
+        <button id="yt-search-open">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>Search
+        </button>
+      </div>
+
+      <form id="yt-search" class="search" hidden>
+        <input id="yt-q" type="search" placeholder="Search YouTube" autocomplete="off" enterkeyhint="search" />
+        <button type="button" id="yt-search-cancel">Cancel</button>
       </form>
-
-      <h2>On TV <span id="yt-screen" class="dim"></span></h2>
-      <div id="yt-items" class="list"></div>
-
-      <h2>History</h2>
-      <div id="yt-history" class="list"></div>
     </section>
-
-    <section class="group vol">
-      <button data-cmd='{"type":"volume","action":"down"}'>Volume −</button>
-      <button data-cmd='{"type":"volume","action":"mute"}'>Mute</button>
-      <button data-cmd='{"type":"volume","action":"up"}'>Volume +</button>
-    </section>
-
-    <section class="group">
-      <button data-cmd='{"type":"home"}' class="home">Home</button>
-    </section>
-
-    <p id="state" class="state"></p>
   </main>
   <script type="module" src="/src/main.ts"></script>
 </body>

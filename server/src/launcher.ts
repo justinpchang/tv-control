@@ -9,6 +9,8 @@ export interface Launcher {
   launch(app: AppId): Promise<void>;
   home(): Promise<void>;
   volume(action: "up" | "down" | "mute"): Promise<void>;
+  // Toggle the active player's fullscreen with a real "f" keypress.
+  fullscreen(): Promise<void>;
   getState(): LauncherState;
   // Machine-readable health for remote debugging (GET /api/state).
   diagnose(): Promise<Record<string, unknown>>;

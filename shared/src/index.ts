@@ -16,14 +16,20 @@ export type Command =
   | { type: "playPause" }
   | { type: "fullscreen" }
   | { type: "seek"; seconds: number }
+  | { type: "seekTo"; seconds: number }
+  | { type: "captions" }
+  | { type: "quality"; level: string }
   | { type: "openVideo"; videoId: string }
   | { type: "search"; text: string }
   | { type: "volume"; action: "up" | "down" | "mute" }
   | { type: "ping" };
 
-// Commands the server forwards to site adapters (extension) instead of (or in
-// addition to) handling locally. launch/home/volume/ping stay server-side.
-const ADAPTER_COMMAND_TYPES = new Set(["navigate", "select", "back", "playPause", "fullscreen", "seek", "openVideo", "search"]);
+// Commands the server forwards to site adapters (extension). launch/home/
+// volume/ping stay server-side, as does fullscreen: it needs a real keypress
+// (browsers refuse requestFullscreen without a user gesture).
+const ADAPTER_COMMAND_TYPES = new Set([
+  "navigate", "select", "back", "playPause", "seek", "seekTo", "captions", "quality", "openVideo", "search",
+]);
 
 export function isAdapterCommand(command: Command): boolean {
   return ADAPTER_COMMAND_TYPES.has(command.type);
@@ -38,24 +44,22 @@ export interface VideoItem {
   thumbnail: string;
 }
 
-export interface HistoryEntry extends VideoItem {
-  watchedAt: string;
-}
-
 export interface NowPlaying extends VideoItem {
   currentTimeSec: number;
   durationSec: number;
   paused: boolean;
+  // null when the video has no captions track.
+  captions: boolean | null;
+  // YouTube quality ids ("auto", "hd1080", "large", ...); [] until known.
+  quality: string;
+  qualities: string[];
 }
 
 export interface YoutubeContext {
   app: "youtube";
   screen: "browse" | "search" | "watch";
   query: string;
-  items: VideoItem[];
-  focusIndex: number;
   nowPlaying: NowPlaying | null;
-  history: HistoryEntry[];
 }
 
 // Union grows as netflix/prime adapters land.
@@ -63,6 +67,8 @@ export type AppContext = YoutubeContext;
 
 export type AdapterMessage =
   | { type: "adapterHello"; app: AppId }
+  // Keepalive: MV3 service workers sleep after ~30s without traffic.
+  | { type: "adapterPing" }
   | { type: "adapterContext"; context: AppContext };
 
 export interface ServerState {
@@ -103,6 +109,18 @@ export function parseCommand(input: unknown): Command {
     case "fullscreen":
     case "ping":
       return { type: c.type as Command["type"] } as Command;
+    case "captions":
+      return { type: "captions" };
+    case "seekTo":
+      if (typeof c.seconds === "number" && Number.isFinite(c.seconds) && c.seconds >= 0 && c.seconds <= 86400) {
+        return { type: "seekTo", seconds: c.seconds };
+      }
+      throw new Error("seekTo.seconds must be within 0..86400");
+    case "quality":
+      if (typeof c.level === "string" && /^[a-z0-9]{1,16}$/.test(c.level)) {
+        return { type: "quality", level: c.level };
+      }
+      throw new Error("quality.level must be a YouTube quality id");
     case "seek":
       if (typeof c.seconds === "number" && Number.isFinite(c.seconds) && Math.abs(c.seconds) <= 3600) {
         return { type: "seek", seconds: c.seconds };
@@ -151,20 +169,6 @@ export function parseAppContext(input: unknown): AppContext {
   if (c.screen !== "browse" && c.screen !== "search" && c.screen !== "watch") {
     throw new Error("context.screen must be browse|search|watch");
   }
-  const items = Array.isArray(c.items)
-    ? c.items.map(parseVideoItem).filter((v): v is VideoItem => v !== null).slice(0, 200)
-    : [];
-  const history = Array.isArray(c.history)
-    ? c.history
-        .map((h) => {
-          const item = parseVideoItem(h);
-          if (!item) return null;
-          const when = (h as Record<string, unknown>).watchedAt;
-          return { ...item, watchedAt: typeof when === "string" ? when : new Date(0).toISOString() };
-        })
-        .filter((h): h is HistoryEntry => h !== null)
-        .slice(0, 100)
-    : [];
   let nowPlaying: NowPlaying | null = null;
   if (typeof c.nowPlaying === "object" && c.nowPlaying !== null) {
     const item = parseVideoItem(c.nowPlaying);
@@ -175,6 +179,11 @@ export function parseAppContext(input: unknown): AppContext {
         currentTimeSec: Math.max(0, numOr(np.currentTimeSec, 0)),
         durationSec: Math.max(0, numOr(np.durationSec, 0)),
         paused: np.paused !== false,
+        captions: typeof np.captions === "boolean" ? np.captions : null,
+        quality: typeof np.quality === "string" ? np.quality.slice(0, 16) : "",
+        qualities: Array.isArray(np.qualities)
+          ? np.qualities.filter((q): q is string => typeof q === "string" && /^[a-z0-9]{1,16}$/.test(q)).slice(0, 16)
+          : [],
       };
     }
   }
@@ -182,10 +191,7 @@ export function parseAppContext(input: unknown): AppContext {
     app: "youtube",
     screen: c.screen,
     query: typeof c.query === "string" ? c.query.slice(0, 200) : "",
-    items,
-    focusIndex: Math.max(0, Math.floor(numOr(c.focusIndex, 0))),
     nowPlaying,
-    history,
   };
 }
 
@@ -198,6 +204,8 @@ export function parseAdapterMessage(input: unknown): AdapterMessage {
         return { type: "adapterHello", app: m.app as AppId };
       }
       throw new Error("adapterHello.app must be netflix|prime|youtube|geforce");
+    case "adapterPing":
+      return { type: "adapterPing" };
     case "adapterContext":
       return { type: "adapterContext", context: parseAppContext(m.context) };
     default:

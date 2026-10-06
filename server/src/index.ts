@@ -86,6 +86,7 @@ async function handleCommand(wss: WebSocketServer, command: Command): Promise<vo
     case "launch": await launcher.launch(command.app); break;
     case "home": await launcher.home(); contexts.clear(); break;
     case "volume": await launcher.volume(command.action); break;
+    case "fullscreen": await launcher.fullscreen(); break;
     case "ping": break;
     default:
       // Adapter-routed media commands: forward to the extension. Unknown
@@ -96,7 +97,10 @@ async function handleCommand(wss: WebSocketServer, command: Command): Promise<vo
 }
 
 function handleAdapterMessage(wss: WebSocketServer, ws: WebSocket, msg: AdapterMessage): void {
+  if (msg.type === "adapterPing") return;
   if (msg.type === "adapterHello") {
+    // Extensions re-hello on every reconnect; only announce real changes.
+    if (adapters.get(ws) === msg.app) return;
     adapters.set(ws, msg.app);
     log.info(`adapter hello: ${msg.app}`);
     broadcast(wss, { type: "state", state: currentState() });
@@ -166,7 +170,25 @@ const httpServer = createServer(async (req, res) => {
 
 const wss = new WebSocketServer({ server: httpServer });
 
+// Drop sockets that stop answering pings (phone locked, PC slept, worker
+// killed) so the adapter list never shows a dead extension as live.
+const alive = new WeakSet<WebSocket>();
+const heartbeat = setInterval(() => {
+  for (const client of wss.clients) {
+    const ws = client as WebSocket;
+    if (!alive.has(ws)) {
+      ws.terminate();
+      continue;
+    }
+    alive.delete(ws);
+    ws.ping();
+  }
+}, 15_000);
+wss.on("close", () => clearInterval(heartbeat));
+
 wss.on("connection", (ws) => {
+  alive.add(ws);
+  ws.on("pong", () => alive.add(ws));
   send(ws, { type: "state", state: currentState() });
   // A fresh phone that connects mid-session also needs the latest context.
   for (const context of contexts.values()) send(ws, { type: "context", context });
@@ -177,7 +199,8 @@ wss.on("connection", (ws) => {
       const command = parseCommand(JSON.parse(text));
       await handleCommand(wss, command);
       send(ws, { type: "ack", command });
-      broadcast(wss, { type: "state", state: currentState() });
+      // Phones ping as a liveness check; no need to fan out state for it.
+      if (command.type !== "ping") broadcast(wss, { type: "state", state: currentState() });
       return;
     } catch (e) {
       // Not a phone command — may be an adapter message; fall through.

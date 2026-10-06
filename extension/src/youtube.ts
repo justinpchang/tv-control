@@ -1,18 +1,12 @@
-import type { Command, HistoryEntry, NowPlaying, VideoItem, YoutubeContext } from "@tv-control/shared";
+import type { Command, NowPlaying, VideoItem, YoutubeContext } from "@tv-control/shared";
 import { OVERLAY_CSS } from "./overlayStyles.js";
-import {
-  formatTime,
-  mergeHistory,
-  moveFocus,
-  screenForPath,
-  videoIdFromHref,
-  watchUrl,
-} from "./ytLib.js";
+import { formatTime, moveFocus, screenForPath, videoIdFromHref, watchUrl } from "./ytLib.js";
 
 // YouTube site adapter: a readable 10-foot overlay (grid + mini player bar)
 // driven by phone commands relayed through the background service worker.
 // It scrapes YouTube's own rendered DOM — no API key, works signed-in with
-// the household account.
+// the household account. Player-API bits (quality) go through ytMain.ts,
+// which runs in the page's MAIN world.
 
 interface CardItem extends VideoItem {
   duration: string;
@@ -26,10 +20,9 @@ interface AdapterState {
   focusIndex: number;
   expanded: boolean;
   tvMode: boolean;
-  history: HistoryEntry[];
+  qualities: string[];
+  quality: string;
   lastReport: string;
-  lastHistoryId: string;
-  lastHistoryAt: number;
 }
 
 const state: AdapterState = {
@@ -39,13 +32,10 @@ const state: AdapterState = {
   focusIndex: 0,
   expanded: false,
   tvMode: true,
-  history: [],
+  qualities: [],
+  quality: "",
   lastReport: "",
-  lastHistoryId: "",
-  lastHistoryAt: 0,
 };
-
-const HISTORY_KEY = "tvyt.history";
 
 // --- Bridge to the background service worker ---
 
@@ -59,15 +49,11 @@ function postToBackground(payload: Record<string, unknown>): void {
 
 function reportContext(force = false): void {
   const nowPlaying = readNowPlaying();
-  maybeRecordHistory(nowPlaying);
   const context: YoutubeContext = {
     app: "youtube",
     screen: state.screen,
     query: state.query,
-    items: state.items.map(({ videoId, title, channel, thumbnail }) => ({ videoId, title, channel, thumbnail })),
-    focusIndex: state.focusIndex,
     nowPlaying,
-    history: state.history,
   };
   // Round playback time so timeupdate doesn't spam the socket every frame.
   const key = JSON.stringify({ ...context, nowPlaying: nowPlaying && { ...nowPlaying, currentTimeSec: Math.floor(nowPlaying.currentTimeSec) } });
@@ -78,13 +64,38 @@ function reportContext(force = false): void {
 
 // --- DOM scraping (YouTube's own renderers; tolerant of layout changes) ---
 
-// Current YouTube renders every video lockup (home, results, related) as
-// yt-lockup-view-model; the legacy ytd-*-renderer tags below are a fallback.
-const LOCKUP_SELECTOR = "yt-lockup-view-model";
-const LEGACY_SELECTORS = ["ytd-rich-item-renderer", "ytd-video-renderer", "ytd-compact-video-renderer"];
+// Current YouTube renders home/related lockups as yt-lockup-view-model, but
+// search results still mix legacy ytd-video-renderer (videos) with lockups
+// (playlists/mixes), so both are scraped in document order.
+const LOCKUP_TAG = "YT-LOCKUP-VIEW-MODEL";
+const CARD_SELECTOR = [
+  "yt-lockup-view-model",
+  "ytd-video-renderer",
+  "ytd-rich-item-renderer",
+  "ytd-compact-video-renderer",
+].join(",");
+
+// The SPA keeps previously visited pages mounted but hidden; scrape only the
+// page for the current screen.
+const PAGE_FOR_SCREEN = { browse: "ytd-browse", search: "ytd-search", watch: "ytd-watch-flexy" } as const;
 
 function clean(s: string | null | undefined, cap: number): string {
   return (s ?? "").trim().replace(/\s+/g, " ").slice(0, cap);
+}
+
+// Legacy renderers repeat text in hidden duplicates ("Sickos Sickos",
+// "24:19 24:19"); collapse an exact doubling.
+function dedupe(s: string): string {
+  return s.replace(/^(.+?)\s+\1$/, "$1");
+}
+
+// Scraped <img> srcs are often lazy placeholders (or a playlist's stack art);
+// trust them only when they are this video's ytimg frame.
+function thumbFor(el: Element, videoId: string): string {
+  const src = el.querySelector("img")?.getAttribute("src") ?? "";
+  return src.startsWith("https://") && src.includes(`/vi/${videoId}/`)
+    ? src
+    : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 }
 
 function parseLockup(el: Element): CardItem | null {
@@ -93,7 +104,8 @@ function parseLockup(el: Element): CardItem | null {
   const idFromClass = /content-id-([A-Za-z0-9_-]{11})/.exec(host?.className ?? "")?.[1] ?? null;
   const thumbAnchor = el.querySelector<HTMLAnchorElement>('a.ytLockupViewModelContentImage[href*="/watch"]');
   const anyLink = el.querySelector<HTMLAnchorElement>('a[href*="/watch?v="]');
-  const videoId = idFromClass ?? videoIdFromHref(thumbAnchor?.getAttribute("href") ?? anyLink?.getAttribute("href"));
+  const videoId = (idFromClass && /^[A-Za-z0-9_-]{11}$/.test(idFromClass) ? idFromClass : null)
+    ?? videoIdFromHref(thumbAnchor?.getAttribute("href") ?? anyLink?.getAttribute("href"));
   if (!videoId) return null;
   // Title lives in the metadata anchor. The thumbnail anchor is aria-hidden
   // and its text is badge/duration junk — never use it.
@@ -107,25 +119,41 @@ function parseLockup(el: Element): CardItem | null {
   const channelAnchor = el.querySelector<HTMLAnchorElement>(
     'a[href^="/@"], a[href*="/channel/"], a[href*="/user/"], a[href*="/c/"]',
   );
-  const duration = clean(el.querySelector(".ytBadgeShapeText")?.textContent, 20);
-  const img = el.querySelector<HTMLImageElement>("img.ytCoreImageHost")
-    ?? el.querySelector<HTMLImageElement>("img");
-  const src = img?.getAttribute("src") ?? "";
   return {
     videoId,
     title,
     channel: clean(channelAnchor?.textContent, 200),
-    thumbnail: src.startsWith("http") ? src : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-    duration,
+    thumbnail: thumbFor(el, videoId),
+    duration: clean(el.querySelector(".ytBadgeShapeText")?.textContent, 20),
     meta: lockupMeta(el),
   };
 }
 
-// "1.2M views · 3 days ago" from the lockup metadata. Regexes stay narrow so
+function parseLegacy(el: Element): CardItem | null {
+  if (el.closest("ytd-ad-slot-renderer")) return null;
+  const link = el.querySelector<HTMLAnchorElement>('a#thumbnail[href*="/watch?v="], a[href*="/watch?v="]');
+  const videoId = videoIdFromHref(link?.getAttribute("href"));
+  if (!videoId) return null;
+  const title = clean(el.querySelector("#video-title")?.textContent, 300)
+    || clean(el.querySelector("#video-title-link")?.textContent, 300)
+    || clean(link?.getAttribute("title"), 300);
+  if (!title) return null;
+  return {
+    videoId,
+    title,
+    channel: dedupe(clean(el.querySelector("ytd-channel-name a, ytd-channel-name")?.textContent, 200)),
+    thumbnail: thumbFor(el, videoId),
+    duration: dedupe(clean(
+      el.querySelector("ytd-thumbnail-overlay-time-status-renderer, .ytBadgeShapeText")?.textContent, 40)),
+    meta: lockupMeta(el),
+  };
+}
+
+// "1.2M views · 3 days ago" from the card metadata. Regexes stay narrow so
 // title words never match; metadata node preferred, whole card as fallback.
 function lockupMeta(el: Element): string {
   const scopes = [
-    el.querySelector("yt-lockup-metadata-view-model")?.textContent,
+    el.querySelector("yt-lockup-metadata-view-model, #metadata-line")?.textContent,
     el.textContent,
   ];
   for (const scope of scopes) {
@@ -141,37 +169,19 @@ function scrapeItems(): CardItem[] {
   const out: CardItem[] = [];
   const seen = new Set<string>();
   try {
-    const lockups = [...document.querySelectorAll(LOCKUP_SELECTOR)];
-    if (lockups.length > 0) {
-      for (const el of lockups) {
-        if (out.length >= 60) break;
-        const item = parseLockup(el);
-        if (!item || seen.has(item.videoId)) continue;
-        seen.add(item.videoId);
-        out.push(item);
-      }
-      return out;
-    }
-    for (const el of document.querySelectorAll(LEGACY_SELECTORS.join(","))) {
+    // Page not mounted yet: report nothing rather than another page's cards.
+    const manager = document.querySelector("ytd-page-manager");
+    const root = manager ? manager.querySelector(`${PAGE_FOR_SCREEN[state.screen]}:not([hidden])`) : document;
+    if (!root) return out;
+    for (const el of root.querySelectorAll(CARD_SELECTOR)) {
       if (out.length >= 60) break;
-      const link = el.querySelector<HTMLAnchorElement>('a[href*="/watch?v="]');
-      const videoId = videoIdFromHref(link?.getAttribute("href"));
-      if (!videoId || seen.has(videoId)) continue;
-      seen.add(videoId);
-      const title = clean(el.querySelector("#video-title")?.textContent, 300)
-        || clean(el.querySelector("#video-title-link")?.textContent, 300)
-        || clean(link?.getAttribute("title"), 300);
-      if (!title) continue;
-      const channel = clean(el.querySelector("ytd-channel-name")?.textContent, 200);
-      const duration = clean(el.querySelector("ytd-thumbnail-overlay-time-status-renderer")?.textContent, 20);
-      out.push({
-        videoId,
-        title,
-        channel,
-        thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-        duration,
-        meta: lockupMeta(el),
-      });
+      let item: CardItem | null;
+      if (el.tagName === LOCKUP_TAG) item = parseLockup(el);
+      else if (el.querySelector("yt-lockup-view-model")) continue; // its lockup is visited on its own
+      else item = parseLegacy(el);
+      if (!item || seen.has(item.videoId)) continue;
+      seen.add(item.videoId);
+      out.push(item);
     }
   } catch {
     /* page mid-render; keep previous items */
@@ -182,6 +192,19 @@ function scrapeItems(): CardItem[] {
 function currentVideo(): HTMLVideoElement | null {
   return document.querySelector<HTMLVideoElement>("video.html5-main-video")
     ?? document.querySelector<HTMLVideoElement>("video");
+}
+
+function subtitlesButton(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(".ytp-subtitles-button");
+}
+
+// null = this video has no captions (button hidden or marked unavailable).
+function readCaptions(): boolean | null {
+  const btn = subtitlesButton();
+  if (!btn || getComputedStyle(btn).display === "none") return null;
+  const label = `${btn.getAttribute("title") ?? ""} ${btn.getAttribute("data-title-no-tooltip") ?? ""}`;
+  if (btn.getAttribute("aria-disabled") === "true" || /unavailable/i.test(label)) return null;
+  return btn.getAttribute("aria-pressed") === "true";
 }
 
 function readNowPlaying(): NowPlaying | null {
@@ -201,7 +224,7 @@ function readNowPlaying(): NowPlaying | null {
     ?? document.querySelector("ytd-channel-name#channel-name")?.textContent ?? "")
     .trim().replace(/\s+/g, " ").slice(0, 200);
   // Owner markup often repeats the name ("Sickos Sickos"); collapse it.
-  const channel = rawChannel.replace(/^(.+?)\s+\1$/, "$1");
+  const channel = dedupe(rawChannel);
   return {
     videoId,
     title: rawTitle.replace(/ - YouTube$/, "").slice(0, 300) || videoId,
@@ -210,17 +233,38 @@ function readNowPlaying(): NowPlaying | null {
     currentTimeSec: v ? v.currentTime : 0,
     durationSec: v && Number.isFinite(v.duration) ? v.duration : 0,
     paused: v ? v.paused : true,
+    captions: readCaptions(),
+    quality: state.quality,
+    qualities: state.qualities,
   };
+}
+
+// --- Quality via the MAIN-world bridge (ytMain.ts) ---
+
+function requestQuality(set?: string): void {
+  document.dispatchEvent(new CustomEvent("tvyt:qualityReq", { detail: JSON.stringify(set ? { set } : {}) }));
+}
+
+function onQualityInfo(e: Event): void {
+  try {
+    const info = JSON.parse(String((e as CustomEvent).detail)) as { levels?: unknown; preferred?: unknown };
+    state.qualities = Array.isArray(info.levels)
+      ? info.levels.filter((l): l is string => typeof l === "string")
+      : [];
+    state.quality = typeof info.preferred === "string" ? info.preferred : "";
+    reportContext();
+  } catch {
+    /* ignore */
+  }
 }
 
 // --- TV overlay ---
 
+let styleEl: HTMLStyleElement | null = null;
 let rootEl: HTMLElement | null = null;
 let gridEl: HTMLElement | null = null;
 let headQueryEl: HTMLElement | null = null;
 let headHintsEl: HTMLElement | null = null;
-let historyRowEl: HTMLElement | null = null;
-let historyLabelEl: HTMLElement | null = null;
 let emptyEl: HTMLElement | null = null;
 let toastEl: HTMLElement | null = null;
 let toastTimer = 0;
@@ -230,12 +274,18 @@ let miniSubEl: HTMLElement | null = null;
 let miniFillEl: HTMLElement | null = null;
 let boundVideo: HTMLVideoElement | null = null;
 
+// Styles go in at document_start (before <head> exists) so the page is dark
+// from the first frame instead of flashing YouTube's layout.
+function ensureStyle(): void {
+  if (styleEl) return;
+  styleEl = document.createElement("style");
+  styleEl.textContent = OVERLAY_CSS;
+  (document.head ?? document.documentElement).appendChild(styleEl);
+}
+
 function ensureOverlay(): void {
-  if (rootEl) return;
-  if (!document.head || !document.body) return;
-  const style = document.createElement("style");
-  style.textContent = OVERLAY_CSS;
-  document.head.appendChild(style);
+  ensureStyle();
+  if (rootEl || !document.body) return;
 
   rootEl = document.createElement("div");
   rootEl.id = "tvyt-root";
@@ -246,19 +296,13 @@ function ensureOverlay(): void {
       <div class="tvyt-hints"></div>
       <button class="tvyt-exit" type="button">Exit TV mode</button>
     </div>
-    <div class="tvyt-rowlabel" hidden></div>
-    <div class="tvyt-hrow" hidden></div>
     <div class="tvyt-grid"></div>
-    <div class="tvyt-empty" hidden>No videos found on this page yet.</div>
-    <div class="tvyt-toast"></div>`;
+    <div class="tvyt-empty" hidden>Loading…</div>`;
   document.body.appendChild(rootEl);
   headQueryEl = rootEl.querySelector(".tvyt-query");
   headHintsEl = rootEl.querySelector(".tvyt-hints");
-  historyLabelEl = rootEl.querySelector(".tvyt-rowlabel");
-  historyRowEl = rootEl.querySelector(".tvyt-hrow");
   gridEl = rootEl.querySelector(".tvyt-grid");
   emptyEl = rootEl.querySelector(".tvyt-empty");
-  toastEl = rootEl.querySelector(".tvyt-toast");
   rootEl.querySelector(".tvyt-exit")?.addEventListener("click", () => setTvMode(false));
 
   miniEl = document.createElement("div");
@@ -267,11 +311,26 @@ function ensureOverlay(): void {
     <div class="tvyt-mini-title"></div>
     <div class="tvyt-mini-sub"></div>
     <div class="tvyt-mini-track"><div class="tvyt-mini-fill"></div></div>
-    <div class="tvyt-mini-hints"></div>`;
+    <div class="tvyt-mini-hints">◀ ▶ seek 10s · ▲ / OK related videos</div>`;
   document.body.appendChild(miniEl);
   miniTitleEl = miniEl.querySelector(".tvyt-mini-title");
   miniSubEl = miniEl.querySelector(".tvyt-mini-sub");
   miniFillEl = miniEl.querySelector(".tvyt-mini-fill");
+
+  toastEl = document.createElement("div");
+  toastEl.id = "tvyt-toast";
+  document.body.appendChild(toastEl);
+  rehostOverlay();
+}
+
+// Only the fullscreen element (and its subtree) renders in fullscreen, so
+// follow it there or the grid/mini bar vanish behind the player.
+function rehostOverlay(): void {
+  const host = document.fullscreenElement ?? document.body;
+  if (!host) return;
+  for (const el of [rootEl, miniEl, toastEl]) {
+    if (el && el.parentElement !== host) host.appendChild(el);
+  }
 }
 
 function toast(msg: string): void {
@@ -283,8 +342,8 @@ function toast(msg: string): void {
 }
 
 function cardHtml(item: CardItem): string {
-  const safe = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  return `<div class="tvyt-thumb"><img loading="lazy" alt="" src="${item.thumbnail}" />` +
+  const safe = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+  return `<div class="tvyt-thumb"><img loading="lazy" alt="" src="${safe(item.thumbnail)}" />` +
     (item.duration ? `<span class="tvyt-dur">${safe(item.duration)}</span>` : "") +
     `</div><div class="tvyt-title">${safe(item.title) || "(untitled)"}</div>` +
     (item.channel ? `<div class="tvyt-channel">${safe(item.channel)}</div>` : "") +
@@ -300,7 +359,7 @@ const MINI_IDLE_MS = 4000;
 
 function pokeMini(): void {
   miniLit = true;
-  if (miniEl) miniEl.hidden = false;
+  if (miniEl) miniEl.hidden = !(state.tvMode && state.screen === "watch" && !state.expanded);
   window.clearTimeout(miniTimer);
   miniTimer = window.setTimeout(() => {
     miniLit = false;
@@ -312,12 +371,8 @@ function renderAll(): void {
   ensureOverlay();
   // Cinema restyle only while the video itself is the screen: fullscreen
   // overlay (browse/search/expanded grid) covers the page anyway.
-  try {
-    document.documentElement.classList.toggle(
-      "tvyt-cinema", state.tvMode && state.screen === "watch" && !state.expanded);
-  } catch {
-    /* document not ready */
-  }
+  document.documentElement.classList.toggle(
+    "tvyt-cinema", state.tvMode && state.screen === "watch" && !state.expanded);
   if (!rootEl || !gridEl) return;
   const showGrid = state.tvMode && (state.screen !== "watch" || state.expanded);
   rootEl.hidden = !showGrid;
@@ -326,7 +381,6 @@ function renderAll(): void {
   if (showGrid) {
     if (headQueryEl) headQueryEl.textContent = state.screen === "search" ? `“${state.query}”` : "";
     if (headHintsEl) headHintsEl.textContent = "D-pad: move · OK: play · ◀ Back";
-    renderHistoryRow();
     gridEl.innerHTML = "";
     state.items.forEach((item, i) => {
       const card = document.createElement("div");
@@ -342,23 +396,6 @@ function renderAll(): void {
   updateFocus();
 }
 
-function renderHistoryRow(): void {
-  if (!historyRowEl || !historyLabelEl) return;
-  const show = state.history.length > 0 && state.screen !== "watch";
-  historyLabelEl.hidden = !show;
-  historyRowEl.hidden = !show;
-  if (!show) return;
-  historyLabelEl.textContent = "Continue watching";
-  historyRowEl.innerHTML = "";
-  state.history.slice(0, 12).forEach((h) => {
-    const card = document.createElement("div");
-    card.className = "tvyt-card tvyt-hcard";
-    card.innerHTML = cardHtml({ ...h, duration: "", meta: "" });
-    card.addEventListener("click", () => openVideoId(h.videoId));
-    historyRowEl!.appendChild(card);
-  });
-}
-
 function renderMini(): void {
   if (!miniEl || !miniTitleEl || !miniSubEl || !miniFillEl) return;
   const np = readNowPlaying();
@@ -367,8 +404,6 @@ function renderMini(): void {
   const time = np.durationSec > 0 ? `${formatTime(np.currentTimeSec)} / ${formatTime(np.durationSec)}` : "";
   miniSubEl.textContent = [np.channel, np.paused ? "Paused" : "Playing", time].filter(Boolean).join(" · ");
   miniFillEl.style.width = np.durationSec > 0 ? `${(np.currentTimeSec / np.durationSec) * 100}%` : "0%";
-  const hints = miniEl.querySelector(".tvyt-mini-hints");
-  if (hints) hints.textContent = "▲▼ OK: related videos · ◀▶: seek 10s · ❚❚: play/pause";
 }
 
 function updateFocus(): void {
@@ -405,55 +440,35 @@ function togglePlay(): void {
   else v.pause();
 }
 
-// Fullscreen the whole page (not just the video) so the TV overlay and mini
-// bar keep rendering on top. Needs a user gesture chain; when the browser
-// refuses, say so instead of failing silently.
-function toggleFullscreen(): void {
-  try {
-    if (document.fullscreenElement) {
-      void document.exitFullscreen().catch(() => toast("Couldn't leave fullscreen"));
-    } else {
-      void document.documentElement.requestFullscreen().catch(() =>
-        toast("Fullscreen blocked — use the player's ⛶ button"));
-    }
-  } catch {
-    toast("Fullscreen unavailable here");
-  }
-}
-
-function seekBy(seconds: number): void {
+function seekTo(seconds: number): void {
   const v = currentVideo();
   if (!v || !Number.isFinite(v.duration)) return;
-  v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + seconds));
+  v.currentTime = Math.max(0, Math.min(v.duration, seconds));
+}
+
+function toggleCaptions(): void {
+  const btn = subtitlesButton();
+  if (readCaptions() === null || !btn) {
+    toast("No captions for this video");
+    return;
+  }
+  btn.click();
+  toast(readCaptions() ? "Captions on" : "Captions off");
+}
+
+function setQuality(level: string): void {
+  requestQuality(level);
+  toast(level === "auto" ? "Quality: Auto" : `Quality: ${level}`);
 }
 
 function runSearch(text: string): void {
   state.query = text;
-  const input = document.querySelector<HTMLInputElement>('input[name="search_query"]');
-  const before = location.href;
-  if (input) {
-    try {
-      input.focus();
-      input.value = text;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.closest("form")?.requestSubmit();
-    } catch {
-      /* fall through to hard navigation */
-    }
-  }
-  // YouTube's SPA usually navigates on submit; if it didn't, go directly.
-  window.setTimeout(() => {
-    if (location.href === before) {
-      location.href = `https://www.youtube.com/results?search_query=${encodeURIComponent(text)}`;
-    }
-  }, 1500);
-  toast(`Searching “${text}”…`);
+  // Plain navigation: doesn't depend on the masthead form being rendered.
+  location.href = `https://www.youtube.com/results?search_query=${encodeURIComponent(text)}`;
 }
 
 // The grid is fixed at 4 columns by CSS; focus math must agree with it.
-function gridColumns(): number {
-  return 4;
-}
+const GRID_COLUMNS = 4;
 
 export function handleCommand(command: Command): void {
   if (!state.tvMode) setTvMode(true);
@@ -464,14 +479,15 @@ export function handleCommand(command: Command): void {
       // sideways seeks, anything else opens the related grid.
       if (state.screen === "watch" && !state.expanded) {
         if (command.direction === "left" || command.direction === "right") {
-          seekBy(command.direction === "left" ? -10 : 10);
+          const v = currentVideo();
+          if (v) seekTo(v.currentTime + (command.direction === "left" ? -10 : 10));
         } else {
           state.expanded = true;
           renderAll();
         }
         break;
       }
-      const next = moveFocus(state.focusIndex, state.items.length, gridColumns(), command.direction);
+      const next = moveFocus(state.focusIndex, state.items.length, GRID_COLUMNS, command.direction);
       if (next !== state.focusIndex) {
         state.focusIndex = next;
         updateFocus();
@@ -499,11 +515,19 @@ export function handleCommand(command: Command): void {
     case "playPause":
       togglePlay();
       break;
-    case "fullscreen":
-      toggleFullscreen();
+    case "seek": {
+      const v = currentVideo();
+      if (v) seekTo(v.currentTime + command.seconds);
       break;
-    case "seek":
-      seekBy(command.seconds);
+    }
+    case "seekTo":
+      seekTo(command.seconds);
+      break;
+    case "captions":
+      toggleCaptions();
+      break;
+    case "quality":
+      setQuality(command.level);
       break;
     case "openVideo":
       openVideoId(command.videoId);
@@ -515,56 +539,20 @@ export function handleCommand(command: Command): void {
       break;
   }
   reportContext(true);
-}
-
-// --- History (local: survives restarts, no account API needed) ---
-
-function loadHistory(): void {
-  try {
-    chrome.storage.local.get([HISTORY_KEY], (res) => {
-      const raw = res[HISTORY_KEY];
-      if (Array.isArray(raw)) {
-        state.history = raw
-          .filter((h): h is HistoryEntry =>
-            typeof h === "object" && h !== null && typeof (h as HistoryEntry).videoId === "string")
-          .slice(0, 50);
-        renderAll();
-        reportContext(true);
-      }
-    });
-  } catch {
-    /* storage unavailable */
-  }
-}
-
-function saveHistory(): void {
-  try {
-    chrome.storage.local.set({ [HISTORY_KEY]: state.history });
-  } catch {
-    /* ignore */
-  }
-}
-
-function maybeRecordHistory(np: NowPlaying | null): void {
-  if (!np || !np.title || np.title === np.videoId) return;
-  const now = Date.now();
-  if (np.videoId === state.lastHistoryId && now - state.lastHistoryAt < 60_000) return;
-  state.lastHistoryId = np.videoId;
-  state.lastHistoryAt = now;
-  state.history = mergeHistory(state.history, np, new Date().toISOString());
-  saveHistory();
-  renderHistoryRow();
+  // Captions/quality settle a beat after the click/API call.
+  window.setTimeout(() => reportContext(), 300);
 }
 
 // --- Page tracking ---
 
 let scanTimer = 0;
 let lastScan = 0;
-const SCAN_EVERY_MS = 1500;
+const SCAN_EVERY_MS = 1000;
 
 function refreshFromPage(resetFocus: boolean): void {
   const screen = screenForPath(location.pathname, location.search);
-  if (screen !== state.screen) {
+  const screenChanged = screen !== state.screen;
+  if (screenChanged) {
     state.screen = screen;
     state.expanded = false;
     resetFocus = true;
@@ -579,24 +567,13 @@ function refreshFromPage(resetFocus: boolean): void {
       state.query = "";
     }
   }
-  if (screen !== "watch") {
-    const items = scrapeItems();
-    if (items.length > 0 || state.items.length === 0) {
-      const sig = items.map((i) => i.videoId).join(",");
-      const prev = state.items.map((i) => i.videoId).join(",");
-      if (sig !== prev) {
-        state.items = items;
-        resetFocus = true;
-      }
-    }
-  } else {
-    const related = scrapeItems();
-    if (related.length > 0) {
-      const sig = related.map((i) => i.videoId).join(",");
-      if (sig !== state.items.map((i) => i.videoId).join(",")) {
-        state.items = related;
-        resetFocus = true;
-      }
+  const items = scrapeItems();
+  // Mid-render scans come back empty; keep the grid unless the page changed.
+  if (items.length > 0 || screenChanged) {
+    const sig = items.map((i) => i.videoId).join(",");
+    if (sig !== state.items.map((i) => i.videoId).join(",")) {
+      state.items = items;
+      resetFocus = true;
     }
   }
   if (resetFocus) state.focusIndex = 0;
@@ -615,7 +592,7 @@ function scheduleRefresh(): void {
         scanTimer = 0;
         lastScan = Date.now();
         refreshFromPage(false);
-      }, SCAN_EVERY_MS);
+      }, SCAN_EVERY_MS - (now - lastScan));
     }
     return;
   }
@@ -639,22 +616,32 @@ function bindVideo(): void {
     renderMini();
     reportContext();
   });
+  // New video loaded or the stream's resolution changed: re-read qualities.
+  v.addEventListener("loadedmetadata", () => requestQuality());
+  v.addEventListener("resize", () => requestQuality());
+  requestQuality();
 }
 
-// --- Boot ---
+// --- Boot (document_start: body may not exist yet) ---
+
+const HEARTBEAT_MS = 20_000;
 
 export function startYoutubeAdapter(): void {
-  loadHistory();
-  ensureOverlay();
+  ensureStyle();
+  document.addEventListener("tvyt:quality", onQualityInfo);
+  document.addEventListener("fullscreenchange", rehostOverlay);
   postToBackground({ kind: "tvHello", app: "youtube" });
-  refreshFromPage(true);
+  // Keeps the background worker (and its socket) alive and re-registers
+  // this tab if the worker was restarted.
+  window.setInterval(() => postToBackground({ kind: "tvHello", app: "youtube" }), HEARTBEAT_MS);
 
+  document.addEventListener("DOMContentLoaded", () => refreshFromPage(true));
   document.addEventListener("yt-navigate-finish", () => refreshFromPage(true));
-  window.addEventListener("yt-navigate-finish", () => refreshFromPage(true));
   new MutationObserver(scheduleRefresh).observe(document.documentElement, {
     childList: true,
     subtree: true,
   });
+  refreshFromPage(true);
 
   chrome.runtime.onMessage.addListener((msg: { kind?: string; command?: Command }) => {
     if (msg?.kind === "tvCommand" && msg.command) handleCommand(msg.command);

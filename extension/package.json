@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit -p tsconfig.json && esbuild src/content.ts --bundle --format=iife --outfile=dist/content.js && esbuild src/background.ts --bundle --format=iife --outfile=dist/background.js",
+    "build": "tsc --noEmit -p tsconfig.json && esbuild src/content.ts --bundle --format=iife --outfile=dist/content.js && esbuild src/background.ts --bundle --format=iife --outfile=dist/background.js && esbuild src/ytMain.ts --bundle --format=iife --outfile=dist/ytMain.js",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {

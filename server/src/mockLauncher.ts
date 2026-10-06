@@ -24,6 +24,10 @@ export class MockLauncher implements Launcher {
     if (action === "mute") this.volumeMuted = !this.volumeMuted;
   }
 
+  async fullscreen(): Promise<void> {
+    log.info(`[mock] fullscreen (f key to ${this.activeApp})`);
+  }
+
   getState(): LauncherState {
     return { activeApp: this.activeApp, volumeMuted: this.volumeMuted, updatedAt: new Date().toISOString() };
   }

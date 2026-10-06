@@ -25,6 +25,9 @@ Reloaded on every launch call — no restart needed.
 - `netplwiz`: auto-login to a dedicated TV account.
 - Startup: run `npm run start:server` at login (Task Scheduler).
 - Edge: install ad blocker, sign into Netflix/Prime/YouTube once.
+- Edge → Settings → System: turn off "Startup boost" and "Continue running
+  background extensions and apps when Microsoft Edge is closed". Launches
+  cold-start Edge; lingering background processes only cost time.
 - GeForce NOW: install native app, sign in, pair controllers.
 - `Home` recovery closes GeForce NOW + Edge and reopens `/home.html`
   fullscreen — the known usable state.

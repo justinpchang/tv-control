@@ -62,5 +62,5 @@ The Mac also holds a work `gh` account (`jpc-owner`); switch accounts with
 2. Next: clone on the OptiPlex, run `LAUNCHER=windows`, prove GeForce NOW
    launch + Home recovery on the real TV; apply the appliance checklist in
    `server/README.md` (no sleep, auto-login, autostart).
-3. Then: Edge extension adapters — YouTube done (overlay + search/history +
-   context-aware PWA panel); `netflix.ts`, `prime.ts` next.
+3. Then: Edge extension adapters — YouTube done (overlay, search, timeline/
+   CC/quality, context-aware PWA panel); `netflix.ts`, `prime.ts` next.

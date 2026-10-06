@@ -1,13 +1,20 @@
 {
   "manifest_version": 3,
   "name": "TV Control",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TV-style remote control for YouTube (Netflix/Prime next). Bridges youtube.com to the TV control service.",
   "background": { "service_worker": "dist/background.js", "type": "module" },
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/*"],
-      "js": ["dist/content.js"]
+      "js": ["dist/content.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["dist/ytMain.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "permissions": ["storage", "alarms"]

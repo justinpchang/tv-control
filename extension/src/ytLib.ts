@@ -1,5 +1,3 @@
-import type { HistoryEntry, VideoItem } from "@tv-control/shared";
-
 // Pure helpers for the YouTube adapter: no DOM, no chrome APIs, so they can
 // be exercised from plain node. DOM scraping lives in youtube.ts.
 
@@ -39,12 +37,6 @@ export function formatTime(totalSec: number): string {
   const r = s % 60;
   const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
   return `${h > 0 ? `${h}:` : ""}${mm}:${String(r).padStart(2, "0")}`;
-}
-
-// Most-recent-first history with dedupe by videoId, capped.
-export function mergeHistory(prev: HistoryEntry[], entry: VideoItem, watchedAt: string, cap = 50): HistoryEntry[] {
-  const rest = prev.filter((h) => h.videoId !== entry.videoId);
-  return [{ ...entry, watchedAt }, ...rest].slice(0, Math.max(1, cap));
 }
 
 export function screenForPath(pathname: string, search: string): "browse" | "search" | "watch" {
