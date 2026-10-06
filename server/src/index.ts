@@ -84,6 +84,17 @@ const httpServer = createServer(async (req, res) => {
     }));
     return;
   }
+  if (url.pathname === "/screenshot" && req.method === "GET") {
+    try {
+      const png = await launcher.screenshot();
+      res.writeHead(200, { "content-type": "image/png", "content-length": png.length });
+      res.end(png);
+    } catch (e) {
+      res.writeHead(501, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : "screenshot failed" }));
+    }
+    return;
+  }
   if (url.pathname === "/api/command" && req.method === "POST") {
     try {
       const command = parseCommand(JSON.parse(await readBody(req)));

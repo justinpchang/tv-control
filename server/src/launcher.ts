@@ -9,4 +9,6 @@ export interface Launcher {
   getState(): ServerState;
   // Machine-readable health for remote debugging (GET /api/state).
   diagnose(): Promise<Record<string, unknown>>;
+  // PNG of the virtual desktop (GET /screenshot). May reject off-Windows.
+  screenshot(): Promise<Buffer>;
 }

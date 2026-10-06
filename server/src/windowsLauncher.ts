@@ -68,10 +68,27 @@ export class WindowsLauncher implements Launcher {
   async home(): Promise<void> {
     await runPs("Get-Process GeForceNOW -ErrorAction SilentlyContinue | Stop-Process -Force").catch(() => {});
     await runPs("Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force").catch(() => {});
-    spawn("cmd", ["/c", "start", "", "msedge", "--start-fullscreen", "http://localhost:8080/home.html"],
-      { detached: true, stdio: "ignore" });
+    // Cold-start Edge: a new window in a lingering instance ignores --start-fullscreen.
+    await this.waitForExit("msedge", 10);
+    const port = process.env.PORT ?? 8080;
+    await this.startDetached(`msedge --start-fullscreen http://localhost:${port}/home.html`, "Edge home");
+    await findAndMaximize("TV Home", 8);
     this.activeApp = "home";
     log.info("home: recovery done");
+  }
+
+  private async waitForExit(name: string, timeoutSec: number): Promise<void> {
+    for (let i = 0; i < timeoutSec; i++) {
+      const out = await runPsCapture(
+        `(Get-Process ${name} -ErrorAction SilentlyContinue | Measure-Object).Count`,
+      ).catch(() => "?");
+      if (out.trim() === "0") {
+        log.info(`home: ${name} exited`);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    log.warn(`home: ${name} still alive after ${timeoutSec}s; launching anyway`);
   }
 
   async volume(action: "up" | "down" | "mute"): Promise<void> {
@@ -94,9 +111,14 @@ export class WindowsLauncher implements Launcher {
       edgeUrls: config.edgeUrls,
     };
   }
+
+  async screenshot(): Promise<Buffer> {
+    const { captureScreenshot } = await import("./screen.js");
+    return captureScreenshot();
+  }
 }
 
-function runPs(script: string): Promise<void> {
+export function runPs(script: string): Promise<void> {
   return new Promise((resolve, reject) => {
     execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], (err) => {
       err ? reject(err) : resolve();

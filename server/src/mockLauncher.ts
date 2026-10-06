@@ -31,4 +31,8 @@ export class MockLauncher implements Launcher {
   async diagnose(): Promise<Record<string, unknown>> {
     return { mode: "mock", lastError: null };
   }
+
+  async screenshot(): Promise<Buffer> {
+    throw new Error("screenshots require Windows");
+  }
 }

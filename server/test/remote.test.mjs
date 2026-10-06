@@ -65,6 +65,9 @@ try {
     body: JSON.stringify({ type: "bogus" }),
   });
   check("bad command rejected", bad.status === 400 && bad.body.ok === false);
+
+  const shot = await fetch(`http://localhost:${SVC}/screenshot`);
+  check("screenshot 501 on mock", shot.status === 501);
 } finally {
   svc.kill("SIGTERM");
 }
